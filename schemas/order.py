@@ -31,8 +31,83 @@ class Location(BaseModel):
 
 
 class OrderBase(BaseModel):
-    customer_id: str = Field(..., description="ID of the customer placing the order")
-    items: List[str] = Field(..., description="List of item IDs included in the order")
-    delivery_location: Location = Field(..., description="Delivery location for the order")
-    status: OrderStatus = Field(..., description="Current status of the order")
+    sales_number: str = Field(..., description="Unique sales number for the order")
+    store_id: str = Field(..., description="Unique store ID for the order")
+    driver_id: str = Field(..., description="Unique driver ID for the order")
     total_price: float = Field(..., description="Total price of the order")
+    sales_id: str = Field(..., description="Unique sales ID for the order")
+    delivery_date: Optional[str] = Field(None, description="Scheduled delivery date for the order")
+    driver_name: Optional[str] = Field(None, description="Name of the driver assigned to the order")
+    store_name: Optional[str] = Field(None, description="Name of the store from which the order is being delivered")
+    route_number: Optional[str] = Field(None, description="Route number for the delivery")
+    status: Optional[OrderStatus] = Field(OrderStatus.PENDING, description="Current status of the order")
+    location_raw: Optional[str] = Field(None, description="Raw location string as provided in the order data")
+    location: Optional[Location] = Field(None, description="Geocoded location information for the delivery address")
+    exchange_sales_id: Optional[str] = Field(None, description="Unique sales ID for the exchange order, if applicable")
+    return_sales_id: Optional[str] = Field(None, description="Unique sales ID for the return order, if applicable")
+    is_pay: Optional[bool] = Field(False, description="Indicates whether the order has been paid for")
+    is_closed: Optional[bool] = Field(False, description="Indicates whether the order has been closed")
+    is_country: Optional[bool] = Field(False, description="Indicates whether the order is for a country delivery")
+    is_download: Optional[bool] = Field(False, description="Indicates whether the order has been downloaded")
+    is_integration: Optional[bool] = Field(False, description="Indicates whether the order is integrated with an external system")
+    is_start_driver: Optional[bool] = Field(False, description="Indicates whether the driver has started the delivery")
+    is_direct_pay: Optional[bool] = Field(False, description="Indicates whether the payment is made directly to the driver")
+    status_name: Optional[str] = Field(None, description="Human-readable name for the current status of the order")
+    status_color: Optional[str] = Field(None, description="Color code representing the current status of the order")
+    wfm_status_id: Optional[str] = Field(None, description="ID for the order status in the WFM system")
+    customer_phone: Optional[str] = Field(None, description="Phone number of the customer for the order")
+    url: Optional[str] = Field(None, description="Tracking URL for the order")
+
+
+class OrderCreate(BaseModel):
+    sales_number: str = Field(..., description="Unique sales number for the order")
+    store_id: str = Field(..., description="Unique store ID for the order")
+    driver_id: str = Field(..., description="Unique driver ID for the order")
+    total_price: float = Field(..., description="Total price of the order", alias="total")
+    sales_id: str = Field(..., description="Unique sales ID for the order")
+    delivery_date: Optional[str] = Field(None, description="Scheduled delivery date")
+    driver_name: Optional[str] = Field(None, description="Name of the driver")
+    store_name: Optional[str] = Field(None, description="Name of the store")
+    route_number: Optional[str] = Field(None, description="Route number for the delivery")
+    customer_address: Optional[str] = Field(None, description="Raw customer address for geocoding")
+    exchange_sales_id: Optional[str] = Field(None, description="Exchange order sales ID")
+    return_sales_id: Optional[str] = Field(None, description="Return order sales ID")
+    is_pay: Optional[bool] = Field(False)
+    is_closed: Optional[bool] = Field(False)
+    is_country: Optional[bool] = Field(False)
+    is_download: Optional[bool] = Field(False)
+    is_integration: Optional[bool] = Field(False)
+    is_start_driver: Optional[bool] = Field(False)
+    is_direct_pay: Optional[bool] = Field(False)
+    status_name: Optional[str] = Field(None)
+    status_color: Optional[str] = Field(None)
+    wfm_status_id: Optional[str] = Field(None)
+    customer_phone: Optional[str] = Field(None)
+
+    model_config = {"populate_by_name": True}
+
+
+class OrderUpdate(BaseModel):
+    store_id: Optional[str] = None
+    driver_id: Optional[str] = None
+    total_price: Optional[float] = None
+    delivery_date: Optional[str] = None
+    driver_name: Optional[str] = None
+    store_name: Optional[str] = None
+    route_number: Optional[str] = None
+    status: Optional[OrderStatus] = None
+    location_raw: Optional[str] = None
+    exchange_sales_id: Optional[str] = None
+    return_sales_id: Optional[str] = None
+    is_pay: Optional[bool] = None
+    is_closed: Optional[bool] = None
+    is_country: Optional[bool] = None
+    is_download: Optional[bool] = None
+    is_integration: Optional[bool] = None
+    is_start_driver: Optional[bool] = None
+    is_direct_pay: Optional[bool] = None
+    status_name: Optional[str] = None
+    status_color: Optional[str] = None
+    wfm_status_id: Optional[str] = None
+    customer_phone: Optional[str] = None
+    url: Optional[str] = None
