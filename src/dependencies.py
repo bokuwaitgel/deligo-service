@@ -8,25 +8,20 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-
-
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Singleton engine + session factory
-# ---------------------------------------------------------------------------
 _ENGINE: Engine | None = None
 _SESSION_FACTORY: sessionmaker[Session] | None = None
-_TABLES_CREATED: set[str] = set()
 
 
 def _get_engine() -> Engine:
-    """Return a module-level singleton SQLAlchemy engine."""
     global _ENGINE
     if _ENGINE is None:
-        conn_str = os.getenv("DATABASE_URI", "sqlite:///products.db")
+        conn_str = os.getenv("DATABASE_URL", "")
+        if not conn_str:
+            raise RuntimeError("DATABASE_URL environment variable is not set")
         _ENGINE = create_engine(
             conn_str,
             pool_pre_ping=True,
@@ -39,21 +34,17 @@ def _get_engine() -> Engine:
 
 
 def _get_session_factory() -> sessionmaker[Session]:
-    """Return a module-level singleton session factory."""
     global _SESSION_FACTORY
     if _SESSION_FACTORY is None:
         _SESSION_FACTORY = sessionmaker(bind=_get_engine())
     return _SESSION_FACTORY
 
 
-def _ensure_tables(base, label: str) -> None:
-    """Create tables once per base to avoid redundant DDL checks."""
-    if label not in _TABLES_CREATED:
-        base.metadata.create_all(_get_engine(), checkfirst=True)
-        _TABLES_CREATED.add(label)
+def get_order_repository():
+    from src.repositories.order import OrderRepository
 
-
-# ---------------------------------------------------------------------------
-# Repository factories
-# ---------------------------------------------------------------------------
-
+    session = _get_session_factory()()
+    try:
+        yield OrderRepository(session)
+    finally:
+        session.close()
