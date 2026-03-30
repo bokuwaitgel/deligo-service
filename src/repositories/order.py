@@ -69,3 +69,59 @@ class OrderRepository:
         self.db_session.delete(order)
         self.db_session.commit()
         return True
+
+    def get_by_driver_id_paginated(
+        self, driver_id: str, cursor: str | None, limit: int
+    ) -> List[OrderDB]:
+        query = (
+            self.db_session.query(OrderDB)
+            .filter(OrderDB.driver_id == driver_id)
+            .order_by(OrderDB.created_at.desc(), OrderDB.sales_number.desc())
+        )
+        if cursor:
+            cursor_order = self.get_by_sales_number(cursor)
+            if cursor_order and cursor_order.created_at:
+                query = query.filter(
+                    (OrderDB.created_at < cursor_order.created_at)
+                    | (
+                        (OrderDB.created_at == cursor_order.created_at)
+                        & (OrderDB.sales_number < cursor)
+                    )
+                )
+        return query.limit(limit + 1).all()
+
+    def get_by_store_id_paginated(
+        self, store_id: str, cursor: str | None, limit: int
+    ) -> List[OrderDB]:
+        query = (
+            self.db_session.query(OrderDB)
+            .filter(OrderDB.store_id == store_id)
+            .order_by(OrderDB.created_at.desc(), OrderDB.sales_number.desc())
+        )
+        if cursor:
+            cursor_order = self.get_by_sales_number(cursor)
+            if cursor_order and cursor_order.created_at:
+                query = query.filter(
+                    (OrderDB.created_at < cursor_order.created_at)
+                    | (
+                        (OrderDB.created_at == cursor_order.created_at)
+                        & (OrderDB.sales_number < cursor)
+                    )
+                )
+        return query.limit(limit + 1).all()
+
+    def get_all_paginated(self, cursor: str | None, limit: int) -> List[OrderDB]:
+        query = self.db_session.query(OrderDB).order_by(
+            OrderDB.created_at.desc(), OrderDB.sales_number.desc()
+        )
+        if cursor:
+            cursor_order = self.get_by_sales_number(cursor)
+            if cursor_order and cursor_order.created_at:
+                query = query.filter(
+                    (OrderDB.created_at < cursor_order.created_at)
+                    | (
+                        (OrderDB.created_at == cursor_order.created_at)
+                        & (OrderDB.sales_number < cursor)
+                    )
+                )
+        return query.limit(limit + 1).all()
