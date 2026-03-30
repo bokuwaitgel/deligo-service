@@ -116,3 +116,36 @@ def update_order(repo: OrderRepository, sales_number: str, data: Dict[str, Any])
 def delete_order(repo: OrderRepository, sales_number: str) -> bool:
     """Delete an order by sales_number. Returns True if deleted, False if not found."""
     return repo.delete(sales_number)
+
+
+def get_orders_by_driver_paginated(
+    repo: OrderRepository, driver_id: str, cursor: str | None, limit: int
+) -> tuple[List[OrderDB], str | None, bool]:
+    """Returns (orders, next_cursor, has_more)."""
+    rows = repo.get_by_driver_id_paginated(driver_id, cursor, limit)
+    has_more = len(rows) > limit
+    orders = rows[:limit]
+    next_cursor = str(orders[-1].sales_number) if has_more and orders else None
+    return orders, next_cursor, has_more
+
+
+def get_orders_by_store_paginated(
+    repo: OrderRepository, store_id: str, cursor: str | None, limit: int
+) -> tuple[List[OrderDB], str | None, bool]:
+    """Returns (orders, next_cursor, has_more)."""
+    rows = repo.get_by_store_id_paginated(store_id, cursor, limit)
+    has_more = len(rows) > limit
+    orders = rows[:limit]
+    next_cursor = str(orders[-1].sales_number) if has_more and orders else None
+    return orders, next_cursor, has_more
+
+
+def get_all_orders_paginated(
+    repo: OrderRepository, cursor: str | None, limit: int
+) -> tuple[List[OrderDB], str | None, bool]:
+    """Returns (orders, next_cursor, has_more)."""
+    rows = repo.get_all_paginated(cursor, limit)
+    has_more = len(rows) > limit
+    orders = rows[:limit]
+    next_cursor = str(orders[-1].sales_number) if has_more and orders else None
+    return orders, next_cursor, has_more
