@@ -14,7 +14,11 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", ""))
+# Use the direct (non-pooler) Neon endpoint for migrations.
+# The pooler (PgBouncer transaction mode) silently drops DDL.
+_db_url = os.getenv("DATABASE_URL", "")
+_db_url = _db_url.replace("-pooler.", ".")
+config.set_main_option("sqlalchemy.url", _db_url)
 
 target_metadata = Base.metadata
 

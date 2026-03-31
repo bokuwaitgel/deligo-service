@@ -27,6 +27,7 @@ class OrderDB(Base):
     is_download = Column(Boolean, nullable=True, default=False)
     is_integration = Column(Boolean, nullable=True, default=False)
     is_start_driver = Column(Boolean, nullable=True, default=False)
+    is_countryside = Column(Boolean, nullable=True, default=False)
     is_direct_pay = Column(Boolean, nullable=True, default=False)
     status_name = Column(String, nullable=True)
     status_color = Column(String, nullable=True)

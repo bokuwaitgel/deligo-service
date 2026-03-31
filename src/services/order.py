@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List
 
 from schemas.database.order_db import OrderDB
@@ -47,6 +48,7 @@ def _map_raw_to_order(raw: Dict[str, Any]) -> OrderDB:
         is_download=_parse_bool(raw.get("is_download")),
         is_integration=_parse_bool(raw.get("is_integration")),
         is_start_driver=_parse_bool(raw.get("is_start_driver")),
+        is_countryside=_parse_bool(raw.get("is_countryside")),
         is_direct_pay=_parse_bool(raw.get("is_direct_pay")),
         status_name=raw.get("status_name"),
         status_color=raw.get("status_color"),
@@ -60,16 +62,31 @@ def _geocode_and_attach(order: OrderDB) -> None:
     if order.location_raw is None:
         return
     try:
-        loc: Location = geocode_address(str(order.location_raw))
-        order.location = loc.model_dump(mode='json')
+        location = str(order.location_raw)
+        if not getattr(order, "is_countryside", False) :
+            location += ", Mongolia, Ulaanbaatar"
+
+        loc: Location = geocode_address(location)
+        order.location = loc.model_dump(mode='json') #type: ignore
     except Exception:
         logger.warning("Geocoding failed for order %s: %s", order.sales_number, order.location_raw, exc_info=True)
+
+
+def _build_tracking_url(sales_number: str) -> str | None:
+    """Build a tracking URL from the TRACKING_URL_PREFIX env var."""
+    prefix = os.getenv("TRACKING_URL_PREFIX")
+    if not prefix:
+        return None
+    return f"{prefix}{sales_number}"
 
 
 def create_order(repo: OrderRepository, raw: Dict[str, Any]) -> OrderDB:
     """Create a single order from raw data, geocoding the address."""
     order = _map_raw_to_order(raw)
     _geocode_and_attach(order)
+    order.url = _build_tracking_url(str(order.sales_number))  # type: ignore
+    print(f"Creating order {order.sales_number} with geocoded location: {order.location}")  # Debug log
+    print(f"Tracking URL for order {order.sales_number}: {order.url}")  # Debug log
     return repo.create(order)
 
 
@@ -79,6 +96,7 @@ def create_orders_bulk(repo: OrderRepository, raw_list: List[Dict[str, Any]]) ->
     for raw in raw_list:
         order = _map_raw_to_order(raw)
         _geocode_and_attach(order)
+        order.url = _build_tracking_url(str(order.sales_number))  # type: ignore
         orders.append(order)
     return repo.create_bulk(orders)
 

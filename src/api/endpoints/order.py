@@ -31,7 +31,7 @@ def create_order_endpoint(
     repo: OrderRepository = Depends(get_order_repository),
 ):
     order = create_order(repo, raw)
-    return {"status": "ok", "data": {"sales_number": order.sales_number}}
+    return {"status": "ok", "data": {"sales_number": order.sales_number, 'url': order.url}}
 
 
 @router.post("/bulk", dependencies=[Depends(require_api_key)])

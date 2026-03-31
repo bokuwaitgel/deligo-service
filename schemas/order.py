@@ -51,6 +51,7 @@ class OrderBase(BaseModel):
     is_download: Optional[bool] = Field(False, description="Indicates whether the order has been downloaded")
     is_integration: Optional[bool] = Field(False, description="Indicates whether the order is integrated with an external system")
     is_start_driver: Optional[bool] = Field(False, description="Indicates whether the driver has started the delivery")
+    is_countryside: Optional[bool] = Field(False, description="Indicates whether the delivery is to a countryside area")
     is_direct_pay: Optional[bool] = Field(False, description="Indicates whether the payment is made directly to the driver")
     status_name: Optional[str] = Field(None, description="Human-readable name for the current status of the order")
     status_color: Optional[str] = Field(None, description="Color code representing the current status of the order")
@@ -78,6 +79,7 @@ class OrderCreate(BaseModel):
     is_download: Optional[bool] = Field(False)
     is_integration: Optional[bool] = Field(False)
     is_start_driver: Optional[bool] = Field(False)
+    is_countryside: Optional[bool] = Field(False)
     is_direct_pay: Optional[bool] = Field(False)
     status_name: Optional[str] = Field(None)
     status_color: Optional[str] = Field(None)
@@ -105,6 +107,7 @@ class OrderUpdate(BaseModel):
     is_download: Optional[bool] = None
     is_integration: Optional[bool] = None
     is_start_driver: Optional[bool] = None
+    is_countryside: Optional[bool] = None
     is_direct_pay: Optional[bool] = None
     status_name: Optional[str] = None
     status_color: Optional[str] = None
