@@ -1,72 +1,333 @@
 {
-  "info": {
-    "name": "Deligo Orders API",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-  },
-  "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8000" },
-    { "key": "apiKey", "value": "your-api-key-here" }
-  ],
-  "item": [
-    {
-      "name": "Create Order",
-      "request": {
-        "method": "POST",
-        "header": [
-          { "key": "Content-Type", "value": "application/json" },
-          { "key": "X-API-Key", "value": "{{apiKey}}" }
-        ],
-        "url": { "raw": "{{baseUrl}}/api/orders/", "host": ["{{baseUrl}}"], "path": ["api", "orders", ""] },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"sales_number\": \"26031048CE79\",\n  \"total\": \"35000.000000\",\n  \"created_date\": \"2026-03-10 11:32:23\",\n  \"status_created_date\": \"2026-03-10 11:39:27\",\n  \"sales_id\": 1773113543582426,\n  \"customer_phone\": \"96355445\",\n  \"delivery_date\": \"2026-03-10 11:32:00\",\n  \"wfm_status_id\": 5,\n  \"status_name\": \"Хуваарилсан\",\n  \"status_color\": \"lime\",\n  \"driver_name\": \"Test Map jolooch\",\n  \"key\": 1773113543582426,\n  \"customer_address\": \"1-р хороолол Хархорин хороолол 51/4 байр 11 давхар 65 тоот 96355445\",\n  \"is_closed\": 0,\n  \"store_name\": \"Map test delguur\",\n  \"route_number\": 1644,\n  \"is_pay\": \"0\",\n  \"custom_order\": null,\n  \"delivery_time\": null,\n  \"store_id\": 1773113445185308,\n  \"driver_id\": 1773113257387725,\n  \"is_three_status\": 0,\n  \"company_id\": 1773113370301785,\n  \"exchange_sales_id\": 0,\n  \"is_country\": 0,\n  \"is_download\": \"0\",\n  \"is_integration\": \"0\",\n  \"is_start_driver\": null,\n  \"is_direct_pay\": \"0\",\n  \"return_sales_id\": null\n}"
-        }
-      }
-    },
-    {
-      "name": "Create Orders Bulk",
-      "request": {
-        "method": "POST",
-        "header": [
-          { "key": "Content-Type", "value": "application/json" },
-          { "key": "X-API-Key", "value": "{{apiKey}}" }
-        ],
-        "url": { "raw": "{{baseUrl}}/api/orders/bulk", "host": ["{{baseUrl}}"], "path": ["api", "orders", "bulk"] },
-        "body": {
-          "mode": "raw",
-          "raw": "[\n  {\n    \"sales_number\": \"26031048CE79\",\n    \"total\": \"35000.000000\",\n    \"sales_id\": 1773113543582426,\n    \"customer_phone\": \"96355445\",\n    \"delivery_date\": \"2026-03-10 11:32:00\",\n    \"wfm_status_id\": 5,\n    \"status_name\": \"Хуваарилсан\",\n    \"status_color\": \"lime\",\n    \"driver_name\": \"Test Map jolooch\",\n    \"customer_address\": \"1-р хороолол Хархорин хороолол 51/4 байр\",\n    \"is_closed\": 0,\n    \"store_name\": \"Map test delguur\",\n    \"route_number\": 1644,\n    \"is_pay\": \"0\",\n    \"store_id\": 1773113445185308,\n    \"driver_id\": 1773113257387725,\n    \"exchange_sales_id\": 0,\n    \"is_country\": 0,\n    \"is_download\": \"0\",\n    \"is_integration\": \"0\",\n    \"is_start_driver\": null,\n    \"is_direct_pay\": \"0\",\n    \"return_sales_id\": null\n  }\n]"
-        }
-      }
-    },
-    {
-      "name": "Get Order by Sales Number",
-      "request": {
-        "method": "GET",
-        "header": [
-          { "key": "X-API-Key", "value": "{{apiKey}}" }
-        ],
-        "url": { "raw": "{{baseUrl}}/api/orders/26031048CE79", "host": ["{{baseUrl}}"], "path": ["api", "orders", "26031048CE79"] }
-      }
-    },
-    {
-      "name": "Get Orders by Driver",
-      "request": {
-        "method": "GET",
-        "header": [
-          { "key": "X-API-Key", "value": "{{apiKey}}" }
-        ],
-        "url": { "raw": "{{baseUrl}}/api/orders/driver/1773113257387725", "host": ["{{baseUrl}}"], "path": ["api", "orders", "driver", "1773113257387725"] }
-      }
-    },
-    {
-      "name": "Get Orders by Store",
-      "request": {
-        "method": "GET",
-        "header": [
-          { "key": "X-API-Key", "value": "{{apiKey}}" }
-        ],
-        "url": { "raw": "{{baseUrl}}/api/orders/store/1773113445185308", "host": ["{{baseUrl}}"], "path": ["api", "orders", "store", "1773113445185308"] }
-      }
-    }
-  ]
+	"info": {
+		"name": "Deligo Service API",
+		"description": "Deligo Mapper API — Order management, location services, and health checks.\n\n## Authentication\nOrder endpoints require `X-API-Key` header.\n\n## Response Format\n```json\n{\"status\": \"ok\", \"data\": ..., \"message\": ...}\n```\n\n## Pagination\nList endpoints support cursor-based pagination:\n- `cursor` — sales_number of last item from previous page\n- `limit` — items per page (default 50, max 200)\n\n## Order Statuses\n`pending` | `in_progress` | `completed` | `cancelled`",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "apiKey",
+			"value": "your-api-key-here",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "System",
+			"item": [
+				{
+					"name": "Root",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/",
+							"host": ["{{baseUrl}}"],
+							"path": [""]
+						},
+						"description": "Welcome endpoint. Returns links to /docs, /redoc, /openapi.json."
+					}
+				},
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/health/",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "health", ""]
+						},
+						"description": "Returns `{\"status\": \"ok\"}` if the API is running."
+					}
+				},
+				{
+					"name": "OpenAPI Schema",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/openapi.json",
+							"host": ["{{baseUrl}}"],
+							"path": ["openapi.json"]
+						},
+						"description": "Raw OpenAPI 3.x JSON schema."
+					}
+				}
+			]
+		},
+		{
+			"name": "Orders",
+			"item": [
+				{
+					"name": "Create Order",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"sales_number\": \"26031048CE79\",\n  \"total\": \"35000.000000\",\n  \"sales_id\": 1773113543582426,\n  \"customer_phone\": \"96355445\",\n  \"delivery_date\": \"2026-03-10 11:32:00\",\n  \"wfm_status_id\": 5,\n  \"status_name\": \"Хуваарилсан\",\n  \"status_color\": \"lime\",\n  \"driver_name\": \"Test Map jolooch\",\n  \"customer_address\": \"1-р хороолол Хархорин хороолол 51/4 байр 11 давхар 65 тоот 96355445\",\n  \"is_closed\": 0,\n  \"store_name\": \"Map test delguur\",\n  \"route_number\": 1644,\n  \"is_pay\": \"0\",\n  \"store_id\": 1773113445185308,\n  \"driver_id\": 1773113257387725,\n  \"exchange_sales_id\": 0,\n  \"is_country\": 0,\n  \"is_download\": \"0\",\n  \"is_integration\": \"0\",\n  \"is_start_driver\": null,\n  \"is_direct_pay\": \"0\",\n  \"return_sales_id\": null\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", ""]
+						},
+						"description": "Create a single order. Geocodes `customer_address` automatically if provided.\n\n**Required fields:** `sales_number`, `store_id`, `driver_id`, `total`, `sales_id`\n\n**Response:**\n```json\n{\"status\": \"ok\", \"data\": {\"sales_number\": \"26031048CE79\"}}\n```"
+					}
+				},
+				{
+					"name": "Create Orders (Bulk)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "[\n  {\n    \"sales_number\": \"26031048CE80\",\n    \"total\": \"35000.000000\",\n    \"sales_id\": 1773113543582427,\n    \"customer_phone\": \"96355445\",\n    \"delivery_date\": \"2026-03-10 11:32:00\",\n    \"wfm_status_id\": 5,\n    \"status_name\": \"Хуваарилсан\",\n    \"status_color\": \"lime\",\n    \"driver_name\": \"Test Map jolooch\",\n    \"customer_address\": \"1-р хороолол Хархорин хороолол 51/4 байр\",\n    \"is_closed\": 0,\n    \"store_name\": \"Map test delguur\",\n    \"route_number\": 1644,\n    \"is_pay\": \"0\",\n    \"store_id\": 1773113445185308,\n    \"driver_id\": 1773113257387725,\n    \"exchange_sales_id\": 0,\n    \"is_country\": 0,\n    \"is_download\": \"0\",\n    \"is_integration\": \"0\",\n    \"is_start_driver\": null,\n    \"is_direct_pay\": \"0\",\n    \"return_sales_id\": null\n  },\n  {\n    \"sales_number\": \"26031048CE81\",\n    \"total\": \"42000.000000\",\n    \"sales_id\": 1773113543582428,\n    \"customer_phone\": \"99112233\",\n    \"delivery_date\": \"2026-03-10 14:00:00\",\n    \"wfm_status_id\": 5,\n    \"status_name\": \"Хуваарилсан\",\n    \"status_color\": \"lime\",\n    \"driver_name\": \"Dorj\",\n    \"customer_address\": \"Сүхбаатар дүүрэг 1-р хороо\",\n    \"is_closed\": 0,\n    \"store_name\": \"East Store\",\n    \"route_number\": 1645,\n    \"is_pay\": \"0\",\n    \"store_id\": 1773113445185309,\n    \"driver_id\": 1773113257387726,\n    \"exchange_sales_id\": 0,\n    \"is_country\": 0,\n    \"is_download\": \"0\",\n    \"is_integration\": \"0\",\n    \"is_start_driver\": null,\n    \"is_direct_pay\": \"0\",\n    \"return_sales_id\": null\n  }\n]"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/bulk",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "bulk"]
+						},
+						"description": "Create multiple orders in one request.\n\n**Body:** Array of order objects (same fields as Create Order).\n\n**Response:**\n```json\n{\"status\": \"ok\", \"data\": {\"count\": 2, \"sales_numbers\": [\"26031048CE80\", \"26031048CE81\"]}}\n```"
+					}
+				},
+				{
+					"name": "List All Orders (Paginated)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/?limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", ""],
+							"query": [
+								{
+									"key": "cursor",
+									"value": "",
+									"description": "sales_number of last item from previous page (omit for first page)",
+									"disabled": true
+								},
+								{
+									"key": "limit",
+									"value": "50",
+									"description": "Items per page (default 50, max 200)"
+								}
+							]
+						},
+						"description": "List all orders with cursor-based pagination. Ordered by `created_at` descending.\n\n**Response:**\n```json\n{\n  \"status\": \"ok\",\n  \"data\": [...orders],\n  \"next_cursor\": \"26031048CE79\",\n  \"has_more\": true\n}\n```\n\nTo get next page, enable `cursor` param and set it to `next_cursor` value from previous response."
+					}
+				},
+				{
+					"name": "Get Orders by Driver (Paginated)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/driver/1773113257387725?limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "driver", "1773113257387725"],
+							"query": [
+								{
+									"key": "cursor",
+									"value": "",
+									"description": "sales_number of last item from previous page",
+									"disabled": true
+								},
+								{
+									"key": "limit",
+									"value": "50",
+									"description": "Items per page (default 50, max 200)"
+								}
+							]
+						},
+						"description": "Get all orders for a specific driver with cursor-based pagination.\n\n**Path param:** `driver_id`\n\n**Response:**\n```json\n{\n  \"status\": \"ok\",\n  \"data\": [...orders],\n  \"next_cursor\": \"26031048CE79\",\n  \"has_more\": true\n}\n```"
+					}
+				},
+				{
+					"name": "Get Orders by Store (Paginated)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/store/1773113445185308?limit=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "store", "1773113445185308"],
+							"query": [
+								{
+									"key": "cursor",
+									"value": "",
+									"description": "sales_number of last item from previous page",
+									"disabled": true
+								},
+								{
+									"key": "limit",
+									"value": "50",
+									"description": "Items per page (default 50, max 200)"
+								}
+							]
+						},
+						"description": "Get all orders from a specific store with cursor-based pagination.\n\n**Path param:** `store_id`\n\n**Response:**\n```json\n{\n  \"status\": \"ok\",\n  \"data\": [...orders],\n  \"next_cursor\": \"26031048CE79\",\n  \"has_more\": true\n}\n```"
+					}
+				},
+				{
+					"name": "Get Order by Sales Number",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/26031048CE79",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "26031048CE79"]
+						},
+						"description": "Get a single order by its sales number.\n\n**Response:**\n```json\n{\"status\": \"ok\", \"data\": { ...full order object }}\n```\n\n**Errors:**\n- `404` — Order not found"
+					}
+				},
+				{
+					"name": "Update Order (Full - PUT)",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"status\": \"in_progress\",\n  \"driver_name\": \"Dorj updated\",\n  \"store_name\": \"Updated Store\",\n  \"driver_id\": \"1773113257387726\",\n  \"is_start_driver\": true,\n  \"is_pay\": false,\n  \"is_closed\": false\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/26031048CE79",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "26031048CE79"]
+						},
+						"description": "Full update — all provided non-null fields replace existing values. Fields not sent (or sent as null) are not changed.\n\nIf `location_raw` changes, the address is automatically re-geocoded.\n\n**Response:**\n```json\n{\"status\": \"ok\", \"data\": { ...updated order }}\n```\n\n**Errors:**\n- `404` — Order not found"
+					}
+				},
+				{
+					"name": "Update Order (Partial - PATCH)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"status\": \"completed\",\n  \"is_closed\": true\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/26031048CE79",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "26031048CE79"]
+						},
+						"description": "Partial update — only the fields you send are modified. Omitted fields stay unchanged.\n\nIf `location_raw` changes, the address is automatically re-geocoded.\n\n**Updatable fields:**\n`store_id`, `driver_id`, `total_price`, `delivery_date`, `driver_name`, `store_name`, `route_number`, `status`, `location_raw`, `exchange_sales_id`, `return_sales_id`, `is_pay`, `is_closed`, `is_country`, `is_download`, `is_integration`, `is_start_driver`, `is_direct_pay`, `status_name`, `status_color`, `wfm_status_id`, `customer_phone`, `url`\n\n**Status values:** `pending`, `in_progress`, `completed`, `cancelled`\n\n**Errors:**\n- `400` — Empty body\n- `404` — Order not found"
+					}
+				},
+				{
+					"name": "Delete Order",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{ "key": "X-API-Key", "value": "{{apiKey}}" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/orders/26031048CE79",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "orders", "26031048CE79"]
+						},
+						"description": "Delete an order by sales number.\n\n**Response:**\n```json\n{\"status\": \"ok\", \"message\": \"Order deleted\"}\n```\n\n**Errors:**\n- `404` — Order not found"
+					}
+				}
+			]
+		},
+		{
+			"name": "Location",
+			"item": [
+				{
+					"name": "Reverse Geocode",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/location/reverse?lat=47.9184&lng=106.9177",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "location", "reverse"],
+							"query": [
+								{
+									"key": "lat",
+									"value": "47.9184",
+									"description": "Latitude"
+								},
+								{
+									"key": "lng",
+									"value": "106.9177",
+									"description": "Longitude"
+								}
+							]
+						},
+						"description": "Reverse geocode coordinates to get a structured address.\n\nNo authentication required.\n\n**Response:** Location object with `latitude`, `longitude`, `formatted_address`, `street_address`, `city`, `district`, `khoroo`, `country`, `postal_code`, `building`."
+					}
+				},
+				{
+					"name": "Geocode Address",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/location/geocode?address=Сүхбаатар дүүрэг 1-р хороо",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "location", "geocode"],
+							"query": [
+								{
+									"key": "address",
+									"value": "Сүхбаатар дүүрэг 1-р хороо",
+									"description": "Address string to geocode"
+								}
+							]
+						},
+						"description": "Geocode an address string to get coordinates and structured location.\n\nNo authentication required.\n\n**Response:** Location object\n\n**Errors:**\n- `404` — Address not found\n- `500` — Geocoding service error"
+					}
+				},
+				{
+					"name": "Parse Frontend Location",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"formattedAddress\": \"Сүхбаатар дүүрэг, Улаанбаатар\",\n  \"streetAddress\": \"Энхтайвны өргөн чөлөө 15\",\n  \"city\": \"Улаанбаатар\",\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"country\": \"Монгол\",\n  \"postalCode\": \"14200\",\n  \"building\": \"Blue Sky Tower\",\n  \"coordinates\": {\n    \"lat\": 47.9184,\n    \"lng\": 106.9177\n  }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/location/parse",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "location", "parse"]
+						},
+						"description": "Parse a frontend Google Maps location object into a standardized Location model.\n\nNo authentication required.\n\n**Response:** Location object"
+					}
+				}
+			]
+		}
+	]
 }
