@@ -48,3 +48,13 @@ def get_order_repository():
         yield OrderRepository(session)
     finally:
         session.close()
+
+
+def get_driver_location_repository():
+    from src.repositories.driver_location import DriverLocationRepository
+
+    session = _get_session_factory()()
+    try:
+        yield DriverLocationRepository(session)
+    finally:
+        session.close()

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from src.api.endpoints.health import router as health_router
 from src.api.endpoints.location import router as location_router
 from src.api.endpoints.order import router as order_router
+from src.api.endpoints.driver import router as driver_router
 
 load_dotenv()
 
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(location_router)
 app.include_router(order_router)
+app.include_router(driver_router)
 
 
 @app.exception_handler(Exception)

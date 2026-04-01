@@ -125,3 +125,11 @@ class OrderRepository:
                     )
                 )
         return query.limit(limit + 1).all()
+
+    def count_by_store_and_status(self, store_id: str, status: str) -> int:
+        """Count orders by store_id and status"""
+        return (
+            self.db_session.query(OrderDB)
+            .filter(OrderDB.store_id == store_id, OrderDB.status == status)
+            .count()
+        )

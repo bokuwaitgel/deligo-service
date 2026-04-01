@@ -29,6 +29,13 @@ class Location(BaseModel):
     postal_code: Optional[str] = Field(None, description="Postal code")
     building: Optional[Building] = Field(None, description="Building information for the location")
 
+class OrderItem(BaseModel):
+    item_id: str = Field(..., description="Unique identifier for the item")
+    name: str = Field(..., description="Name of the item")
+    image_url: Optional[str] = Field(None, description="URL of the item's image")
+    quantity: int = Field(..., description="Quantity of the item in the order")
+    price: float = Field(..., description="Price of a single unit of the item")
+
 
 class OrderBase(BaseModel):
     sales_number: str = Field(..., description="Unique sales number for the order")
@@ -43,6 +50,10 @@ class OrderBase(BaseModel):
     status: Optional[OrderStatus] = Field(OrderStatus.PENDING, description="Current status of the order")
     location_raw: Optional[str] = Field(None, description="Raw location string as provided in the order data")
     location: Optional[Location] = Field(None, description="Geocoded location information for the delivery address")
+    location_editable: bool = Field(True, description="Indicates whether the location can be edited by the driver or store")
+    location_confirmed: bool = Field(False, description="Whether the location has been confirmed by shop or driver")
+    location_confirmed_by: Optional[str] = Field(None, description="Who confirmed: 'shop' or 'driver'")
+    location_confirmed_at: Optional[str] = Field(None, description="When location was confirmed")
     exchange_sales_id: Optional[str] = Field(None, description="Unique sales ID for the exchange order, if applicable")
     return_sales_id: Optional[str] = Field(None, description="Unique sales ID for the return order, if applicable")
     is_pay: Optional[bool] = Field(False, description="Indicates whether the order has been paid for")
@@ -53,6 +64,7 @@ class OrderBase(BaseModel):
     is_start_driver: Optional[bool] = Field(False, description="Indicates whether the driver has started the delivery")
     is_countryside: Optional[bool] = Field(False, description="Indicates whether the delivery is to a countryside area")
     is_direct_pay: Optional[bool] = Field(False, description="Indicates whether the payment is made directly to the driver")
+    order_items: Optional[List[OrderItem]] = Field(None, description="List of items included in the order, if available")
     status_name: Optional[str] = Field(None, description="Human-readable name for the current status of the order")
     status_color: Optional[str] = Field(None, description="Color code representing the current status of the order")
     wfm_status_id: Optional[str] = Field(None, description="ID for the order status in the WFM system")
@@ -81,6 +93,7 @@ class OrderCreate(BaseModel):
     is_start_driver: Optional[bool] = Field(False)
     is_countryside: Optional[bool] = Field(False)
     is_direct_pay: Optional[bool] = Field(False)
+    order_items: Optional[List[OrderItem]] = Field(None)
     status_name: Optional[str] = Field(None)
     status_color: Optional[str] = Field(None)
     wfm_status_id: Optional[str] = Field(None)
@@ -109,8 +122,46 @@ class OrderUpdate(BaseModel):
     is_start_driver: Optional[bool] = None
     is_countryside: Optional[bool] = None
     is_direct_pay: Optional[bool] = None
+    order_items: Optional[List[OrderItem]] = None
     status_name: Optional[str] = None
     status_color: Optional[str] = None
     wfm_status_id: Optional[str] = None
     customer_phone: Optional[str] = None
     url: Optional[str] = None
+    location_confirmed: Optional[bool] = None
+    location_confirmed_by: Optional[str] = None
+    location_confirmed_at: Optional[str] = None
+
+# New schemas for additional operations
+class DriverAssign(BaseModel):
+    driver_id: str = Field(..., description="Unique driver ID to assign")
+    driver_name: str = Field(..., description="Name of the driver")
+
+
+class StatusUpdate(BaseModel):
+    status: OrderStatus = Field(..., description="New order status")
+
+
+class LocationConfirm(BaseModel):
+    confirmed_by: str = Field(..., description="Who confirmed: 'shop' or 'driver'")
+    location: Optional[Location] = Field(None, description="Updated location if provided")
+
+
+class DriverLocation(BaseModel):
+    latitude: float = Field(..., description="Current latitude of the driver")
+    longitude: float = Field(..., description="Current longitude of the driver")
+
+
+class DriverLocationResponse(BaseModel):
+    driver_id: str = Field(..., description="Unique driver ID")
+    latitude: float = Field(..., description="Last known latitude")
+    longitude: float = Field(..., description="Last known longitude")
+    updated_at: str = Field(..., description="Timestamp of last update")
+
+
+class StoreSummary(BaseModel):
+    pending: int = Field(0, description="Number of pending orders")
+    in_progress: int = Field(0, description="Number of in-progress orders")
+    completed: int = Field(0, description="Number of completed orders")
+    cancelled: int = Field(0, description="Number of cancelled orders")
+    total: int = Field(0, description="Total number of orders")

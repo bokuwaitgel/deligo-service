@@ -54,6 +54,7 @@ def _map_raw_to_order(raw: Dict[str, Any]) -> OrderDB:
         status_color=raw.get("status_color"),
         wfm_status_id=str(raw["wfm_status_id"]) if raw.get("wfm_status_id") is not None else None,
         customer_phone=raw.get("customer_phone"),
+        order_items=[item if isinstance(item, dict) else item.model_dump() for item in raw["order_items"]] if raw.get("order_items") else None,
     )
 
 
@@ -118,6 +119,7 @@ def update_order(repo: OrderRepository, sales_number: str, data: Dict[str, Any])
     order = repo.get_by_sales_number(sales_number)
     if order is None:
         return None
+    print(f"Updating order {sales_number} with data: {data}")  # Debug log
 
     old_location_raw = order.location_raw
     new_location_raw = data.get("location_raw")
@@ -167,3 +169,76 @@ def get_all_orders_paginated(
     orders = rows[:limit]
     next_cursor = str(orders[-1].sales_number) if has_more and orders else None
     return orders, next_cursor, has_more
+
+
+def assign_driver_to_order(repo: OrderRepository, sales_number: str, driver_id: str, driver_name: str) -> OrderDB | None:
+    """Assign a driver to an order and set status to in_progress."""
+    order = repo.get_by_sales_number(sales_number)
+    if order is None:
+        return None
+    
+    data = {
+        'driver_id': driver_id,
+        'driver_name': driver_name,
+        'status': 'in_progress'
+    }
+    return repo.update_partial(sales_number, data)
+
+
+def update_order_status(repo: OrderRepository, sales_number: str, status: str) -> OrderDB | None:
+    """Update order status."""
+    order = repo.get_by_sales_number(sales_number)
+    if order is None:
+        return None
+    
+    return repo.update_partial(sales_number, {'status': status})
+
+
+def confirm_order_location(repo: OrderRepository, sales_number: str, confirmed_by: str, location: Location | None = None) -> OrderDB | None:
+    """Confirm order location by shop or driver."""
+    from datetime import datetime, timezone as tz
+    
+    order = repo.get_by_sales_number(sales_number)
+    if order is None:
+        return None
+    
+    data = {
+        'location_confirmed': True,
+        'location_confirmed_by': confirmed_by,
+        'location_confirmed_at': datetime.now(tz.utc)
+    }
+    
+    # If location is provided, update it
+    if location:
+        data['location'] = location.model_dump(mode='json')
+    else:
+        # No new location provided — ensure existing location has coordinates
+        existing = order.location
+        has_coords = (
+            isinstance(existing, dict)
+            and existing.get('latitude') is not None
+            and existing.get('longitude') is not None
+        )
+        if not has_coords:
+            # Try to geocode from location_raw
+            _geocode_and_attach(order)
+            if order.location:
+                data['location'] = order.location
+    
+    return repo.update_partial(sales_number, data)
+
+
+def get_store_summary(repo: OrderRepository, store_id: str) -> Dict[str, int]:
+    """Get count summary of orders by status for a store."""
+    pending = repo.count_by_store_and_status(store_id, 'pending')
+    in_progress = repo.count_by_store_and_status(store_id, 'in_progress')
+    completed = repo.count_by_store_and_status(store_id, 'completed')
+    cancelled = repo.count_by_store_and_status(store_id, 'cancelled')
+    
+    return {
+        'pending': pending,
+        'in_progress': in_progress,
+        'completed': completed,
+        'cancelled': cancelled,
+        'total': pending + in_progress + completed + cancelled
+    }

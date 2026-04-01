@@ -5,7 +5,16 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-from schemas.database.order_db import Base
+from schemas.database.order_db import Base as OrderBase
+from schemas.database.driver_location_db import Base as DriverLocationBase
+
+# Merge metadata from all models
+from sqlalchemy import MetaData
+combined_metadata = MetaData()
+for table in OrderBase.metadata.tables.values():
+    table.to_metadata(combined_metadata)
+for table in DriverLocationBase.metadata.tables.values():
+    table.to_metadata(combined_metadata)
 
 load_dotenv()
 
@@ -20,7 +29,7 @@ _db_url = os.getenv("DATABASE_URL", "")
 _db_url = _db_url.replace("-pooler.", ".")
 config.set_main_option("sqlalchemy.url", _db_url)
 
-target_metadata = Base.metadata
+target_metadata = combined_metadata
 
 # Only manage tables that are explicitly declared in this service's metadata.
 # This prevents autogenerate from touching tables owned by other services
