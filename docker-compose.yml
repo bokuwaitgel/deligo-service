@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-deligo}
+      POSTGRES_USER: ${POSTGRES_USER:-deligo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deligo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deligo} -d ${POSTGRES_DB:-deligo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL so it points to the compose db service.
+      # Individual variables in .env still take effect for everything else.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-deligo}:${POSTGRES_PASSWORD:-deligo}@db:5432/${POSTGRES_DB:-deligo}
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:

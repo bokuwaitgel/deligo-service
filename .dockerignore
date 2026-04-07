@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tests & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Alembic compiled cache (not the migrations themselves)
+alembic/__pycache__/
+
+# Environment files (injected at runtime via env_file / -e)
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Docker
+Dockerfile*
+docker-compose*.yml
