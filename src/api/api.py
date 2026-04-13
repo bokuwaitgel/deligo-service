@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -14,6 +15,20 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from src.dependencies import _get_engine
+    from schemas.database.delivery_db import Base as DeliveryBase
+    from schemas.database.driver_location_db import Base as DriverBase
+
+    engine = _get_engine()
+    DeliveryBase.metadata.create_all(engine)
+    DriverBase.metadata.create_all(engine)
+    logger.info("Database tables ensured")
+    yield
+
+
 app = FastAPI(
     title="Deligo Mapper API",
     version="1.0.0",
@@ -21,6 +36,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

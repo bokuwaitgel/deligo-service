@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from schemas.order import DriverLocation, DriverLocationResponse
+from schemas.delivery import DriverLocation, DriverLocationResponse
 from src.api.auth_utils import require_api_key
 from src.dependencies import get_driver_location_repository
 from src.repositories.driver_location import DriverLocationRepository
@@ -63,7 +63,7 @@ def get_driver_location_public_endpoint(
     """Public endpoint: get driver's last known location for customer tracking"""
     driver_loc = get_driver_location(repo, driver_id)
     if not driver_loc:
-        raise HTTPException(status_code=404, detail="Driver location not found")
+        return {"status": "ok", "data": None}
 
     return {
         "status": "ok",

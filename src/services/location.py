@@ -7,7 +7,7 @@ import re
 import googlemaps
 from dotenv import load_dotenv
 
-from schemas.order import Building, Location
+from schemas.delivery import Building, Location
 
 load_dotenv()
 

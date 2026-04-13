@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from schemas.order import Location
+from schemas.delivery import Location
 from src.services.location import (
     geocode_address,
     parse_frontend_location,

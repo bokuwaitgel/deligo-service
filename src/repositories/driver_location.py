@@ -23,10 +23,11 @@ class DriverLocationRepository:
 
     def upsert(self, driver_id: str, latitude: float, longitude: float) -> DriverLocationDB:
         """Create or update driver location"""
-        location = self.get_by_driver_id(driver_id)
-        if location:
-            location.latitude = latitude
-            location.longitude = longitude
+        driver = self.get_by_driver_id(driver_id)
+        if driver:
+            driver.latitude = latitude
+            driver.longitude = longitude
+            location = driver
         else:
             location = DriverLocationDB(
                 driver_id=driver_id,

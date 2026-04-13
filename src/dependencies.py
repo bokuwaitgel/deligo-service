@@ -40,12 +40,12 @@ def _get_session_factory() -> sessionmaker[Session]:
     return _SESSION_FACTORY
 
 
-def get_order_repository():
-    from src.repositories.order import OrderRepository
+def get_delivery_repository():
+    from src.repositories.delivery import DeliveryRepository
 
     session = _get_session_factory()()
     try:
-        yield OrderRepository(session)
+        yield DeliveryRepository(session)
     finally:
         session.close()
 
