@@ -1,0 +1,342 @@
+{
+  "info": {
+    "name": "Deligo Mapper API",
+    "description": "Delivery mapping and tracking service.\n\n**Auth:** Protected endpoints require `x-api-key` header. Set the `api_key` collection variable.\n\n**Folders:**\n- System — health & root\n- Delivery — internal CRUD (order.py router, mounted)\n- Tracking — public customer view (delivery.py router)\n- Driver — GPS reporting + driver's order list\n- Shop — shop's order list\n- Location — geocoding utilities (no auth)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url",     "value": "http://localhost:8000", "type": "string" },
+    { "key": "api_key",      "value": "your-api-key-here",    "type": "string" },
+    { "key": "sales_number", "value": "26031012808A",          "type": "string" },
+    { "key": "driver_id",    "value": "1773113257387725",      "type": "string" },
+    { "key": "store_id",     "value": "1773113445185308",      "type": "string" }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key",   "value": "x-api-key"   },
+      { "key": "value", "value": "{{api_key}}" },
+      { "key": "in",    "value": "header"       }
+    ]
+  },
+  "item": [
+
+    {
+      "name": "System",
+      "description": "Health and welcome endpoints. No auth required.",
+      "item": [
+        {
+          "name": "Root",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/", "host": ["{{base_url}}"], "path": [""] },
+            "description": "Welcome page with links to /docs, /redoc, /openapi.json."
+          }
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/health/", "host": ["{{base_url}}"], "path": ["api","health",""] },
+            "description": "Returns {\"status\": \"ok\"} when the service is up."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Delivery (Internal)",
+      "description": "Internal CRUD for delivery orders. All endpoints require X-API-Key.\nRouter: src/api/endpoints/order.py — prefix /api/delivery",
+      "item": [
+        {
+          "name": "Create Delivery Order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.sales_number) {",
+                  "    pm.collectionVariables.set('sales_number', json.sales_number);",
+                  "    console.log('sales_number set:', json.sales_number);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sales_number\": \"26031012808A\",\n  \"sales_id\": \"1773113900534670\",\n  \"store_id\": \"1773113445185308\",\n  \"driver_id\": \"1773113257387725\",\n  \"driver_name\": \"Test Map jolooch\",\n  \"customer_address\": \"Сүхбаатар дүүрэг, 1-р хороо, Улаанбаатар\",\n  \"is_countryside\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/delivery",
+              "host": ["{{base_url}}"], "path": ["api","delivery"]
+            },
+            "description": "Create a new delivery order. Geocodes the customer address immediately. Auto-creates driver location record if missing.\n\nSaves `sales_number` to the collection variable on success."
+          }
+        },
+        {
+          "name": "Get Delivery Order",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}"]
+            },
+            "description": "Fetch a single delivery order by sales number. Merges detail from the order service if available."
+          }
+        },
+        {
+          "name": "Get Order Full Detail",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}/detail",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","detail"]
+            },
+            "description": "Fetch delivery order with full customer info, line items, and payment data.\nReturns dummy data until the real order service is wired up."
+          }
+        },
+        {
+          "name": "List Orders — by Driver",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery?driver_id={{driver_id}}&limit=20",
+              "host": ["{{base_url}}"], "path": ["api","delivery"],
+              "query": [
+                { "key": "driver_id", "value": "{{driver_id}}", "description": "Filter by driver ID" },
+                { "key": "cursor",    "value": "",              "description": "Last sales_number from previous page", "disabled": true },
+                { "key": "limit",     "value": "20",            "description": "Max results (1–100)" }
+              ]
+            },
+            "description": "Cursor-based pagination. Pass `cursor` = last `sales_number` from the previous response to get the next page."
+          }
+        },
+        {
+          "name": "List Orders — by Store",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery?store_id={{store_id}}&limit=20",
+              "host": ["{{base_url}}"], "path": ["api","delivery"],
+              "query": [
+                { "key": "store_id", "value": "{{store_id}}", "description": "Filter by store ID" },
+                { "key": "cursor",   "value": "",             "description": "Last sales_number from previous page", "disabled": true },
+                { "key": "limit",    "value": "20",           "description": "Max results (1–100)" }
+              ]
+            },
+            "description": "Must provide either driver_id or store_id. Returns 400 if neither is supplied."
+          }
+        },
+        {
+          "name": "Update Location (coordinates)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": 47.9184,\n  \"longitude\": 106.9177,\n  \"formatted_address\": \"Сүхбаатар дүүрэг, 1-р хороо\",\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"city\": \"Улаанбаатар\",\n  \"country\": \"Mongolia\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}/location",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","location"]
+            },
+            "description": "Update with pre-geocoded coordinates. Returns 404 if order is not found or is already completed."
+          }
+        },
+        {
+          "name": "Update Address (re-geocode)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_address\": \"Баянзүрх дүүрэг, 23-р хороо, Улаанбаатар\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}/address?is_countryside=false",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","address"],
+              "query": [
+                { "key": "is_countryside", "value": "false", "description": "true = skip UB/Mongolia suffix (countryside addresses)" }
+              ]
+            },
+            "description": "Re-geocodes the new address string and stores the result. Returns 422 if geocoding fails."
+          }
+        },
+        {
+          "name": "Complete Delivery Order",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}/complete",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","complete"]
+            },
+            "description": "Locks the delivery — map_status → completed. No further location edits are allowed after this."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Tracking (Customer / Public)",
+      "description": "Public endpoints for customers to track their own delivery. No API key required.\nRouter: src/api/endpoints/delivery.py — prefix /api/delivery",
+      "item": [
+        {
+          "name": "Track Delivery Order",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/tracking/{{sales_number}}",
+              "host": ["{{base_url}}"], "path": ["api","delivery","tracking","{{sales_number}}"]
+            },
+            "description": "Customer-facing tracking. Returns current location, map_status, and merged order detail. No auth required."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Driver",
+      "description": "Driver-facing endpoints: report GPS position and view assigned orders.\nGPS endpoints require X-API-Key (driver.py router).\nOrder list does not require auth (delivery.py router).",
+      "item": [
+        {
+          "name": "Report GPS Position",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": 47.9184,\n  \"longitude\": 106.9177\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/drivers/{{driver_id}}/location",
+              "host": ["{{base_url}}"], "path": ["api","drivers","{{driver_id}}","location"]
+            },
+            "description": "Driver pings their current GPS coordinates. Creates or updates the driver_location record."
+          }
+        },
+        {
+          "name": "Get Driver Last Location",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/drivers/{{driver_id}}/location",
+              "host": ["{{base_url}}"], "path": ["api","drivers","{{driver_id}}","location"]
+            },
+            "description": "Returns the driver's last known latitude/longitude and updated_at timestamp."
+          }
+        },
+        {
+          "name": "List My Orders",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/driver/{{driver_id}}?limit=10",
+              "host": ["{{base_url}}"], "path": ["api","delivery","driver","{{driver_id}}"],
+              "query": [
+                { "key": "limit", "value": "10", "description": "Max deliveries to return" },
+                { "key": "query", "value": "",   "description": "Pagination cursor / search query", "disabled": true }
+              ]
+            },
+            "description": "Returns deliveries assigned to this driver, with merged order detail. No auth required."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Shop",
+      "description": "Shop-facing endpoints: view orders assigned to a store. No auth required.\nRouter: src/api/endpoints/delivery.py — prefix /api/delivery",
+      "item": [
+        {
+          "name": "List Store Orders",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/shop/{{store_id}}?limit=10",
+              "host": ["{{base_url}}"], "path": ["api","delivery","shop","{{store_id}}"],
+              "query": [
+                { "key": "limit", "value": "10", "description": "Max deliveries to return" },
+                { "key": "query", "value": "",   "description": "Pagination cursor / search query", "disabled": true }
+              ]
+            },
+            "description": "Returns delivery orders for this store, with merged order detail. No auth required."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Location (Utilities)",
+      "description": "Geocoding and reverse-geocoding helpers. No API key required.\nRouter: src/api/endpoints/location.py — prefix /api/location",
+      "item": [
+        {
+          "name": "Reverse Geocode",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/location/reverse?lat=47.9184&lng=106.9177",
+              "host": ["{{base_url}}"], "path": ["api","location","reverse"],
+              "query": [
+                { "key": "lat", "value": "47.9184",  "description": "Latitude"  },
+                { "key": "lng", "value": "106.9177", "description": "Longitude" }
+              ]
+            },
+            "description": "Converts coordinates to a structured Location object (address, district, khoroo, etc.)."
+          }
+        },
+        {
+          "name": "Geocode Address",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/location/geocode?address=Сүхбаатар дүүрэг, Улаанбаатар",
+              "host": ["{{base_url}}"], "path": ["api","location","geocode"],
+              "query": [
+                { "key": "address", "value": "Сүхбаатар дүүрэг, Улаанбаатар", "description": "Address string to geocode" }
+              ]
+            },
+            "description": "Converts an address string to coordinates + structured Location. Returns 404 if geocoding finds no results."
+          }
+        },
+        {
+          "name": "Parse Frontend Location",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"formattedAddress\": \"Сүхбаатар дүүрэг, Улаанбаатар, Монгол\",\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"city\": \"Улаанбаатар\",\n  \"country\": \"Mongolia\",\n  \"coordinates\": { \"lat\": 47.9184, \"lng\": 106.9177 }\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/location/parse",
+              "host": ["{{base_url}}"], "path": ["api","location","parse"]
+            },
+            "description": "Accepts a Google Maps frontend location object and normalises it into the standard Location model."
+          }
+        }
+      ]
+    }
+
+  ]
+}

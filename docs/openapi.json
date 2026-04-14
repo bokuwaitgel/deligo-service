@@ -1,0 +1,717 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Deligo Mapper API",
+    "version": "1.0.0",
+    "description": "Delivery mapping and tracking service for Deligo. Handles delivery order lifecycle, driver location tracking, and address geocoding."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local development"
+    },
+    {
+      "url": "https://api.deligo.mn",
+      "description": "Production"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "API key required for protected endpoints"
+      }
+    },
+    "schemas": {
+      "MapStatus": {
+        "type": "string",
+        "enum": ["pending", "completed"],
+        "description": "Map editing status of the delivery order"
+      },
+      "Building": {
+        "type": "object",
+        "properties": {
+          "building": { "type": "string", "nullable": true },
+          "entrance": { "type": "string", "nullable": true },
+          "floor": { "type": "string", "nullable": true },
+          "door": { "type": "string", "nullable": true },
+          "extra_notes": { "type": "string", "nullable": true }
+        }
+      },
+      "Location": {
+        "type": "object",
+        "required": ["latitude", "longitude"],
+        "properties": {
+          "latitude": { "type": "number", "format": "float", "example": 47.9184 },
+          "longitude": { "type": "number", "format": "float", "example": 106.9177 },
+          "formatted_address": { "type": "string", "nullable": true, "example": "Сүхбаатар дүүрэг, Улаанбаатар" },
+          "street_address": { "type": "string", "nullable": true },
+          "city": { "type": "string", "nullable": true, "example": "Улаанбаатар" },
+          "state": { "type": "string", "nullable": true },
+          "district": { "type": "string", "nullable": true, "example": "Сүхбаатар" },
+          "khoroo": { "type": "string", "nullable": true, "example": "1-р хороо" },
+          "country": { "type": "string", "nullable": true, "example": "Mongolia" },
+          "postal_code": { "type": "string", "nullable": true },
+          "building": { "$ref": "#/components/schemas/Building", "nullable": true }
+        }
+      },
+      "DriverLocation": {
+        "type": "object",
+        "required": ["latitude", "longitude"],
+        "properties": {
+          "latitude": { "type": "number", "format": "float", "example": 47.9184 },
+          "longitude": { "type": "number", "format": "float", "example": 106.9177 }
+        }
+      },
+      "DriverLocationResponse": {
+        "type": "object",
+        "properties": {
+          "driver_id": { "type": "string", "example": "DRV-001" },
+          "latitude": { "type": "number", "format": "float", "example": 47.9184 },
+          "longitude": { "type": "number", "format": "float", "example": 106.9177 },
+          "updated_at": { "type": "string", "format": "date-time", "example": "2026-04-14T10:00:00" }
+        }
+      },
+      "DeliveryOrderCreate": {
+        "type": "object",
+        "required": ["sales_number", "store_id", "driver_id", "customer_address"],
+        "properties": {
+          "sales_number": {
+            "type": "string",
+            "description": "Unique sales number from the order service",
+            "example": "26031012808A"
+          },
+          "sales_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Sales ID from the order service",
+            "example": "1773113900534670"
+          },
+          "store_id": {
+            "type": "string",
+            "description": "Store/shop ID",
+            "example": "1773113445185308"
+          },
+          "driver_id": {
+            "type": "string",
+            "description": "Driver ID",
+            "example": "1773113257387725"
+          },
+          "driver_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "Driver name",
+            "example": "Test Map jolooch"
+          },
+          "customer_address": {
+            "type": "string",
+            "description": "Raw address string to geocode",
+            "example": "Сүхбаатар дүүрэг, 1-р хороо, Улаанбаатар"
+          },
+          "is_countryside": {
+            "type": "boolean",
+            "default": false,
+            "description": "Skip Mongolia/UB suffix in geocoding for countryside addresses"
+          }
+        }
+      },
+      "AddressUpdateRequest": {
+        "type": "object",
+        "required": ["customer_address"],
+        "properties": {
+          "customer_address": {
+            "type": "string",
+            "description": "New address string to re-geocode",
+            "example": "Баянзүрх дүүрэг, 23-р хороо, Улаанбаатар"
+          }
+        }
+      },
+      "DeliveryOrderResponse": {
+        "type": "object",
+        "properties": {
+          "sales_number": { "type": "string", "example": "26031012808A" },
+          "sales_id": { "type": "string", "nullable": true, "example": "1773113900534670" },
+          "store_id": { "type": "string", "example": "1773113445185308" },
+          "driver_id": { "type": "string", "example": "1773113257387725" },
+          "driver_name": { "type": "string", "nullable": true, "example": "Test Map jolooch" },
+          "customer_address": { "type": "string", "example": "Сүхбаатар дүүрэг, 1-р хороо, Улаанбаатар" },
+          "customer_location": { "$ref": "#/components/schemas/Location", "nullable": true },
+          "map_status": { "$ref": "#/components/schemas/MapStatus" },
+          "detail": {
+            "type": "object",
+            "nullable": true,
+            "description": "Merged order detail from the order service"
+          },
+          "tracking_url": { "type": "string", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "FrontendLocationInput": {
+        "type": "object",
+        "properties": {
+          "formattedAddress": { "type": "string", "nullable": true },
+          "streetAddress": { "type": "string", "nullable": true },
+          "city": { "type": "string", "nullable": true },
+          "state": { "type": "string", "nullable": true },
+          "district": { "type": "string", "nullable": true },
+          "khoroo": { "type": "string", "nullable": true },
+          "country": { "type": "string", "nullable": true },
+          "postalCode": { "type": "string", "nullable": true },
+          "building": { "type": "string", "nullable": true },
+          "coordinates": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "lat": { "type": "number" },
+              "lng": { "type": "number" }
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Invalid or missing API key",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "detail": "Invalid or missing API key" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "detail": "Order not found" }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["system"],
+        "summary": "Root",
+        "description": "Welcome endpoint with links to API docs.",
+        "responses": {
+          "200": {
+            "description": "Welcome message",
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "Welcome to the Deligo Mapper API.",
+                  "docs": "/docs",
+                  "redoc": "/redoc",
+                  "openapi": "/openapi.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health/": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Health Check",
+        "description": "Health check endpoint to verify the API is running.",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "example": { "status": "ok" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/location/reverse": {
+      "get": {
+        "tags": ["location"],
+        "summary": "Reverse Geocode",
+        "description": "Convert latitude/longitude coordinates to an address.",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "description": "Latitude",
+            "schema": { "type": "number", "format": "float", "example": 47.9184 }
+          },
+          {
+            "name": "lng",
+            "in": "query",
+            "required": true,
+            "description": "Longitude",
+            "schema": { "type": "number", "format": "float", "example": 106.9177 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Location details",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Location" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/location/geocode": {
+      "get": {
+        "tags": ["location"],
+        "summary": "Geocode Address",
+        "description": "Convert an address string to coordinates and address details.",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "query",
+            "required": true,
+            "description": "Address string to geocode",
+            "schema": { "type": "string", "example": "Сүхбаатар дүүрэг, Улаанбаатар" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Geocoded location",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Location" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/location/parse": {
+      "post": {
+        "tags": ["location"],
+        "summary": "Parse Frontend Location",
+        "description": "Parse a frontend Google Maps location object into a standardized Location model.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FrontendLocationInput" },
+              "example": {
+                "formattedAddress": "Сүхбаатар дүүрэг, Улаанбаатар, Монгол",
+                "district": "Сүхбаатар",
+                "khoroo": "1-р хороо",
+                "city": "Улаанбаатар",
+                "country": "Mongolia",
+                "coordinates": { "lat": 47.9184, "lng": 106.9177 }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Parsed location",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Location" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/delivery": {
+      "post": {
+        "tags": ["delivery"],
+        "summary": "Create Delivery Order",
+        "description": "Create a new delivery order. Geocodes the customer address and auto-creates a driver location record if missing.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DeliveryOrderCreate" },
+              "example": {
+                "sales_number": "26031012808A",
+                "sales_id": "1773113900534670",
+                "store_id": "1773113445185308",
+                "driver_id": "1773113257387725",
+                "driver_name": "Test Map jolooch",
+                "customer_address": "Сүхбаатар дүүрэг, 1-р хороо, Улаанбаатар",
+                "is_countryside": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created delivery order",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeliveryOrderResponse" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      },
+      "get": {
+        "tags": ["delivery"],
+        "summary": "List Delivery Orders",
+        "description": "List delivery orders filtered by driver or store with cursor-based pagination. Must provide either `driver_id` or `store_id`.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "driver_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter by driver ID",
+            "schema": { "type": "string", "example": "1773113257387725" }
+          },
+          {
+            "name": "store_id",
+            "in": "query",
+            "required": false,
+            "description": "Filter by store ID",
+            "schema": { "type": "string", "example": "1773113445185308" }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Pagination cursor (last sales_number from previous page)",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of results (1–100)",
+            "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of delivery orders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/DeliveryOrderResponse" }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request — driver_id or store_id required",
+            "content": {
+              "application/json": {
+                "example": { "detail": "Provide driver_id or store_id" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/delivery/{sales_number}": {
+      "get": {
+        "tags": ["delivery"],
+        "summary": "Get Delivery Order",
+        "description": "Fetch a delivery order by its sales number.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "sales_number",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "26031012808A" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Delivery order",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeliveryOrderResponse" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/delivery/{sales_number}/detail": {
+      "get": {
+        "tags": ["delivery"],
+        "summary": "Get Order Full Detail",
+        "description": "Fetch delivery order with full detail including customer info, items, and payment. Returns dummy data until the real order service is integrated.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "sales_number",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "26031012808A" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order with full detail",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok",
+                  "data": {
+                    "sales_number": "26031012808A",
+                    "customer": {
+                      "name": "Dummy Customer",
+                      "phone": "+976-9900-0000",
+                      "email": "customer@example.com"
+                    },
+                    "items": [
+                      { "product_id": "PROD-001", "name": "Sample Item A", "quantity": 2, "unit_price": 15000, "total_price": 30000 },
+                      { "product_id": "PROD-002", "name": "Sample Item B", "quantity": 1, "unit_price": 8500, "total_price": 8500 }
+                    ],
+                    "payment": { "method": "cash", "total": 38500, "currency": "MNT", "is_paid": false },
+                    "notes": "Please call before arrival."
+                  }
+                }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/delivery/{sales_number}/location": {
+      "patch": {
+        "tags": ["delivery"],
+        "summary": "Update Delivery Location",
+        "description": "Update the customer delivery location with explicit pre-geocoded coordinates.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "sales_number",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "26031012808A" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Location" },
+              "example": {
+                "latitude": 47.9184,
+                "longitude": 106.9177,
+                "formatted_address": "Сүхбаатар дүүрэг, 1-р хороо",
+                "district": "Сүхбаатар",
+                "khoroo": "1-р хороо",
+                "city": "Улаанбаатар",
+                "country": "Mongolia"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated delivery order",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeliveryOrderResponse" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/delivery/{sales_number}/address": {
+      "patch": {
+        "tags": ["delivery"],
+        "summary": "Update Delivery Address",
+        "description": "Re-geocode a new address string and update the delivery location. Use `is_countryside=true` for addresses outside Ulaanbaatar to skip the UB suffix.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "sales_number",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "26031012808A" }
+          },
+          {
+            "name": "is_countryside",
+            "in": "query",
+            "required": false,
+            "description": "Skip Mongolia/UB suffix in geocoding for countryside addresses",
+            "schema": { "type": "boolean", "default": false }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AddressUpdateRequest" },
+              "example": { "customer_address": "Баянзүрх дүүрэг, 23-р хороо, Улаанбаатар" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated delivery order",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeliveryOrderResponse" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": {
+            "description": "Geocoding failed for the provided address",
+            "content": {
+              "application/json": {
+                "example": { "detail": "Could not geocode address" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/delivery/{sales_number}/complete": {
+      "post": {
+        "tags": ["delivery"],
+        "summary": "Complete Delivery Order",
+        "description": "Mark a delivery as completed. No further location edits are allowed after this.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "sales_number",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "26031012808A" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Completed delivery order",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeliveryOrderResponse" }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/drivers/{driver_id}/location": {
+      "post": {
+        "tags": ["drivers"],
+        "summary": "Update Driver Location",
+        "description": "Driver reports their current GPS position. Creates or updates the driver location record.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "driver_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "1773113257387725" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DriverLocation" },
+              "example": { "latitude": 47.9184, "longitude": 106.9177 }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Driver location updated",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok",
+                  "data": {
+                    "driver_id": "1773113257387725",
+                    "latitude": 47.9184,
+                    "longitude": 106.9177,
+                    "updated_at": "2026-04-14T10:00:00"
+                  }
+                }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "get": {
+        "tags": ["drivers"],
+        "summary": "Get Driver Location",
+        "description": "Get a driver's last known GPS position.",
+        "security": [{ "ApiKeyAuth": [] }],
+        "parameters": [
+          {
+            "name": "driver_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "example": "1773113257387725" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Driver location",
+            "content": {
+              "application/json": {
+                "example": {
+                  "status": "ok",
+                  "data": {
+                    "driver_id": "1773113257387725",
+                    "latitude": 47.9184,
+                    "longitude": 106.9177,
+                    "updated_at": "2026-04-14T10:00:00"
+                  }
+                }
+              }
+            }
+          },
+          "403": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  }
+}

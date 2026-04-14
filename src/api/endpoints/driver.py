@@ -55,22 +55,3 @@ def get_driver_location_endpoint(
     }
 
 
-@router.get("/{driver_id}/location/public")
-def get_driver_location_public_endpoint(
-    driver_id: str,
-    repo: DriverLocationRepository = Depends(get_driver_location_repository),
-):
-    """Public endpoint: get driver's last known location for customer tracking"""
-    driver_loc = get_driver_location(repo, driver_id)
-    if not driver_loc:
-        return {"status": "ok", "data": None}
-
-    return {
-        "status": "ok",
-        "data": {
-            "driver_id": driver_loc.driver_id,
-            "latitude": driver_loc.latitude,
-            "longitude": driver_loc.longitude,
-            "updated_at": driver_loc.updated_at.isoformat()
-        }
-    }

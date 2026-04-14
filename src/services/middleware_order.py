@@ -96,6 +96,32 @@ def get_order_detail(sales_number: str) -> Optional[Dict[str, Any]]:
 
     return None
 
+def get_orders_by_sales_numbers(sales_numbers: List[str]) -> List[Dict[str, Any]]:
+    """Fetch multiple orders by their sales numbers.
+
+    Returns a list of order details for the given sales numbers. If an order is
+    not found, it will be skipped in the results. Falls back to dummy data when
+    ORDER_SERVICE_URL is not configured (development / local use).
+    """
+    if not ORDER_SERVICE_URL:
+        logger.debug("ORDER_SERVICE_URL not set — returning dummy order details for %s", sales_numbers)
+        return [order for sn in sales_numbers if (order := _dummy_order_detail(sn)) is not None]
+
+    orders = []
+    try:
+        url = f"{ORDER_SERVICE_URL}/api/orders/batch"
+        response = httpx.post(url, json={"sales_numbers": sales_numbers}, timeout=5.0)
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 404:
+            return []
+        logger.warning(
+            "Order service returned %s for order %s", response.status_code, sales_numbers
+        )
+    except Exception:
+        logger.warning("Failed to reach order service for order %s", sales_numbers, exc_info=True)
+
+    return orders
 
 def get_new_sales_numbers(existing: List[str]) -> List[str]:
     """Return dummy sales_numbers not yet in the given existing list."""

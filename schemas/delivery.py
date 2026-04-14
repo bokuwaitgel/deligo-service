@@ -69,6 +69,7 @@ class DeliveryOrderResponse(BaseModel):
     customer_address: str
     customer_location: Optional[Location] = None
     map_status: MapStatus
+    detail: Optional[dict] = None  # Placeholder for merged order detail data
     tracking_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
