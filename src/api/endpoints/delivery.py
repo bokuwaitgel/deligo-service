@@ -4,7 +4,6 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 
 from schemas.delivery import (
     AddressUpdateRequest,
@@ -143,6 +142,11 @@ async def track_delivery_order(
         detail = get_order_detail(delivery_order.sales_number)
         if detail:
             delivery_order.detail = detail
+        #get driver orders where 
+        driver_deliveries = await get_driver_deliveries(driver_id=delivery_order.driver_id, query=None, limit=100, repo=repo)
+        #where detail is_closed is not 1 or True, and sales_number is not the current one, and map_status is not completed
+        active_deliveries = [d for d in driver_deliveries if d.detail and d.detail.get("is_closed") not in [1, True]]
+        delivery_order.active_deliveries_count = len(active_deliveries)
         return delivery_order
     except HTTPException:
         raise
@@ -162,7 +166,7 @@ async def track_delivery_order(
 async def get_driver_deliveries(
     driver_id: str,
     query: Optional[str] = Query(None, description="Search query for filtering deliveries"),
-    limit: Optional[int] = Query(10, description="Maximum number of deliveries to return"),
+    limit: int = Query(10, description="Maximum number of deliveries to return"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Get delivery orders assigned to a driver. This is a placeholder for the actual driver dashboard functionality."""
@@ -194,11 +198,52 @@ async def get_driver_deliveries(
         have query params for query, limit etc to support pagination and filtering in the future.
 """
 
+@router.get("/shop/{store_id}/summary")
+async def get_shop_summary(
+    store_id: str,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Get summary counts for a shop's deliveries, deriving status from order service detail."""
+    try:
+        deliveries = repo.get_by_shop_id_paginated(store_id, cursor=None, limit=10000)
+        sales_numbers = [d.sales_number for d in deliveries]
+        details_map: dict = {}
+        if sales_numbers:
+            raw = get_orders_by_sales_numbers(sales_numbers)
+            details_map = {d["sales_number"]: d for d in raw}
+
+        counts = {"pending": 0, "in_progress": 0, "completed": 0, "cancelled": 0}
+        for delivery in deliveries:
+            detail = details_map.get(delivery.sales_number, {})
+            is_closed = detail.get("is_closed", 0)
+            is_start_driver = detail.get("is_start_driver")
+            if is_closed == 1 or is_closed is True:
+                counts["completed"] += 1
+            elif is_start_driver is not None and is_start_driver is not False and is_start_driver != 0:
+                counts["in_progress"] += 1
+            else:
+                counts["pending"] += 1
+
+        return {
+            "status": "ok",
+            "data": {
+                "pending": counts["pending"],
+                "in_progress": counts["in_progress"],
+                "completed": counts["completed"],
+                "cancelled": counts["cancelled"],
+                "total": len(deliveries),
+            },
+        }
+    except Exception as e:
+        logger.error(f"Error fetching shop summary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch shop summary")
+
+
 @router.get("/shop/{store_id}", response_model=list[DeliveryOrderResponse])
 async def get_shop_deliveries(
     store_id: str,
     query: Optional[str] = Query(None, description="Search query for filtering deliveries"),
-    limit: Optional[int] = Query(10, description="Maximum number of deliveries to return"),
+    limit: int = Query(10, description="Maximum number of deliveries to return"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Get delivery orders assigned to a shop. This is a placeholder for the actual shop dashboard functionality."""

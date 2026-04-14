@@ -33,8 +33,8 @@ class Location(BaseModel):
 
 
 class DriverLocation(BaseModel):
-    latitude: float
-    longitude: float
+    latitude: float = Field(..., description="Current latitude of the driver")
+    longitude: float = Field(..., description="Current longitude of the driver")
 
 
 class DriverLocationResponse(BaseModel):
@@ -71,5 +71,6 @@ class DeliveryOrderResponse(BaseModel):
     map_status: MapStatus
     detail: Optional[dict] = None  # Placeholder for merged order detail data
     tracking_url: Optional[str] = None
+    active_deliveries_count: Optional[int] = None  # Number of active deliveries for the driver, to be filled in the endpoint
     created_at: datetime
     updated_at: datetime

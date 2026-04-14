@@ -43,7 +43,28 @@ def get_driver_location_endpoint(
     driver_loc = get_driver_location(repo, driver_id)
     if not driver_loc:
         raise HTTPException(status_code=404, detail="Driver location not found")
-    
+
+    return {
+        "status": "ok",
+        "data": {
+            "driver_id": driver_loc.driver_id,
+            "latitude": driver_loc.latitude,
+            "longitude": driver_loc.longitude,
+            "updated_at": driver_loc.updated_at.isoformat()
+        }
+    }
+
+
+@router.get("/{driver_id}/location/public")
+def get_driver_location_public(
+    driver_id: str,
+    repo: DriverLocationRepository = Depends(get_driver_location_repository),
+):
+    """Get driver's last known location (public, no authentication required)"""
+    driver_loc = get_driver_location(repo, driver_id)
+    if not driver_loc:
+        raise HTTPException(status_code=404, detail="Driver location not found")
+
     return {
         "status": "ok",
         "data": {

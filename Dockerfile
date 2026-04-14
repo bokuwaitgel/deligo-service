@@ -36,4 +36,4 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 EXPOSE 8000
 
 # Run migrations then start the server
-CMD ["sh", "-c", "alembic upgrade head && python run.py"]
+CMD ["python", "run.py"]

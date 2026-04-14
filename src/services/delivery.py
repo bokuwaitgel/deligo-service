@@ -48,7 +48,7 @@ def create_delivery(repo: DeliveryRepository, payload: DeliveryOrderCreate) -> D
     if payload.driver_id:
         driver_loc = DriverLocationRepository(repo.db_session)
         if driver_loc.get_by_driver_id(payload.driver_id) is None:
-            driver_loc.upsert(payload.driver_id, 0.0, 0.0)
+            driver_loc.upsert(payload.driver_id, 47.9184, 106.9175)  # Default to UB center if driver location not found
 
 
     return DeliveryOrderResponse.model_validate(repo.create(order))
