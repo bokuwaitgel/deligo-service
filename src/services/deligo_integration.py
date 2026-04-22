@@ -204,5 +204,42 @@ def structure_sales_detail(raw: Dict[str, Any]) -> Dict[str, Any]:
     detail["status_code"] = status_code
     detail["status_name"] = status_label or raw.get("status_name")
     detail["is_closed"] = is_closed
-    detail["order_items"] = raw.get("items") or raw.get("order_items") or []
+    detail["order_items"] = _normalize_items(raw.get("items") or raw.get("order_items") or [])
     return detail
+
+
+def _normalize_items(raw_items: Any) -> List[Dict[str, Any]]:
+    """Map deligo sales items into the canonical { item_id, name, image_url, quantity, price } shape."""
+    if not isinstance(raw_items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("sales_detail_id") or item.get("item_id")
+        name = item.get("item_name") or item.get("main_item_name") or item.get("name") or "—"
+        image_url = item.get("default_image") or item.get("image_url")
+        quantity = item.get("sales_qty") or item.get("quantity") or 0
+        price_raw = (
+            item.get("unit_price")
+            or item.get("line_total_amount")
+            or item.get("line_total_price")
+            or item.get("price")
+            or 0
+        )
+        try:
+            price = float(price_raw)
+        except (TypeError, ValueError):
+            price = 0.0
+        try:
+            quantity_int = int(quantity)
+        except (TypeError, ValueError):
+            quantity_int = 0
+        out.append({
+            "item_id": str(item_id) if item_id is not None else "",
+            "name": name,
+            "image_url": image_url,
+            "quantity": quantity_int,
+            "price": price,
+        })
+    return out
