@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Deligo Mapper API",
-    "description": "Delivery mapping and tracking service.\n\n**Auth:** Protected endpoints require `x-api-key` header. Set the `api_key` collection variable.\n\n**Folders:**\n- System — health & root\n- Delivery — internal CRUD (order.py router, mounted)\n- Tracking — public customer view (delivery.py router)\n- Driver — GPS reporting + driver's order list\n- Shop — shop's order list\n- Location — geocoding utilities (no auth)",
+    "description": "Delivery mapping and tracking service.\n\n**Auth:** Protected endpoints require `x-api-key` header. Set the `api_key` collection variable.\n\n**Folders:**\n- System — health & root\n- Delivery — internal CRUD (delivery.py router)\n- Tracking — public customer view (delivery.py router)\n- Driver — GPS reporting + driver's order list\n- Shop — shop's order list + summary\n- Location — geocoding utilities (no auth)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -48,7 +48,7 @@
 
     {
       "name": "Delivery (Internal)",
-      "description": "Internal CRUD for delivery orders. All endpoints require X-API-Key.\nRouter: src/api/endpoints/order.py — prefix /api/delivery",
+      "description": "Internal CRUD for delivery orders. All endpoints require X-API-Key.\nRouter: src/api/endpoints/delivery.py — prefix /api/delivery",
       "item": [
         {
           "name": "Create Delivery Order",
@@ -74,14 +74,14 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"sales_number\": \"26031012808A\",\n  \"sales_id\": \"1773113900534670\",\n  \"store_id\": \"1773113445185308\",\n  \"driver_id\": \"1773113257387725\",\n  \"driver_name\": \"Test Map jolooch\",\n  \"customer_address\": \"Сүхбаатар дүүрэг, 1-р хороо, Улаанбаатар\",\n  \"is_countryside\": false\n}",
+              "raw": "{\n  \"sales_number\": \"26031012808A\",\n  \"sales_id\": \"1773113900534670\",\n  \"store_id\": \"1773113445185308\",\n  \"customer_address\": \"Сүхбаатар дүүрэг, 1-р хороо, Улаанбаатар\",\n  \"is_countryside\": false\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
-              "raw": "{{base_url}}/api/delivery",
-              "host": ["{{base_url}}"], "path": ["api","delivery"]
+              "raw": "{{base_url}}/api/delivery/",
+              "host": ["{{base_url}}"], "path": ["api","delivery",""]
             },
-            "description": "Create a new delivery order. Geocodes the customer address immediately. Auto-creates driver location record if missing.\n\nSaves `sales_number` to the collection variable on success."
+            "description": "Create a new delivery order. Geocodes the customer address immediately.\n\nRequired: `sales_number`, `store_id`, `customer_address`.\nOptional: `sales_id`, `is_countryside` (default false).\n\nDriver assignment is no longer part of this payload — it comes from the order service.\n\nSaves `sales_number` to the collection variable on success. Returns 201."
           }
         },
         {
@@ -92,50 +92,7 @@
               "raw": "{{base_url}}/api/delivery/{{sales_number}}",
               "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}"]
             },
-            "description": "Fetch a single delivery order by sales number. Merges detail from the order service if available."
-          }
-        },
-        {
-          "name": "Get Order Full Detail",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/delivery/{{sales_number}}/detail",
-              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","detail"]
-            },
-            "description": "Fetch delivery order with full customer info, line items, and payment data.\nReturns dummy data until the real order service is wired up."
-          }
-        },
-        {
-          "name": "List Orders — by Driver",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/delivery?driver_id={{driver_id}}&limit=20",
-              "host": ["{{base_url}}"], "path": ["api","delivery"],
-              "query": [
-                { "key": "driver_id", "value": "{{driver_id}}", "description": "Filter by driver ID" },
-                { "key": "cursor",    "value": "",              "description": "Last sales_number from previous page", "disabled": true },
-                { "key": "limit",     "value": "20",            "description": "Max results (1–100)" }
-              ]
-            },
-            "description": "Cursor-based pagination. Pass `cursor` = last `sales_number` from the previous response to get the next page."
-          }
-        },
-        {
-          "name": "List Orders — by Store",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/delivery?store_id={{store_id}}&limit=20",
-              "host": ["{{base_url}}"], "path": ["api","delivery"],
-              "query": [
-                { "key": "store_id", "value": "{{store_id}}", "description": "Filter by store ID" },
-                { "key": "cursor",   "value": "",             "description": "Last sales_number from previous page", "disabled": true },
-                { "key": "limit",    "value": "20",           "description": "Max results (1–100)" }
-              ]
-            },
-            "description": "Must provide either driver_id or store_id. Returns 400 if neither is supplied."
+            "description": "Fetch a single delivery order by sales number. Enriched with sales detail (including driver info) from the deligo integration service.\n\n`detail` is populated by calling `POST /api/sales/get` on deligo with `{ id: <sales_id> }`. If the local row has no `sales_id`, `detail` will be `null` — make sure `sales_id` is supplied at create time."
           }
         },
         {
@@ -145,14 +102,14 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"latitude\": 47.9184,\n  \"longitude\": 106.9177,\n  \"formatted_address\": \"Сүхбаатар дүүрэг, 1-р хороо\",\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"city\": \"Улаанбаатар\",\n  \"country\": \"Mongolia\"\n}",
+              "raw": "{\n  \"latitude\": 47.9184,\n  \"longitude\": 106.9177,\n  \"formatted_address\": \"Сүхбаатар дүүрэг, 1-р хороо\",\n  \"street_address\": null,\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"city\": \"Улаанбаатар\",\n  \"state\": null,\n  \"country\": \"Mongolia\",\n  \"postal_code\": null,\n  \"building\": null\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/delivery/{{sales_number}}/location",
               "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","location"]
             },
-            "description": "Update with pre-geocoded coordinates. Returns 404 if order is not found or is already completed."
+            "description": "Update with pre-geocoded coordinates. Returns 404 if order is not found or is already completed.\n\n`building` can be an object: `{ building, entrance, floor, door, extra_notes }`."
           }
         },
         {
@@ -176,14 +133,25 @@
           }
         },
         {
-          "name": "Complete Delivery Order",
+          "name": "Start Delivery (driver pickup)",
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{base_url}}/api/delivery/{{sales_number}}/complete",
-              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","complete"]
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}/start",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","start"]
             },
-            "description": "Locks the delivery — map_status → completed. No further location edits are allowed after this."
+            "description": "Driver starts the delivery. Proxies to `POST https://api.deligo.mn/api/sales/changestatus` with `{ id: <sales_id>, statusId: 8 }` (salesDriverDone / Жолооч хүлээн авсан).\n\n`sales_id` is resolved from the local delivery row (falling back to the deligo sales detail). No request body.\n\nErrors: 404 if the delivery is unknown, 422 if no sales_id can be resolved, 502 if the deligo API rejects the call.\n\nOnly the start-delivery transition is supported for now."
+          }
+        },
+        {
+          "name": "Complete Map Edit",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/{{sales_number}}/map_edit",
+              "host": ["{{base_url}}"], "path": ["api","delivery","{{sales_number}}","map_edit"]
+            },
+            "description": "Locks the delivery — map_status → completed. No further location edits are allowed after this.\n\n(Renamed from `/complete` to `/map_edit` to reflect the map-editing workflow.)"
           }
         }
       ]
@@ -202,7 +170,7 @@
               "raw": "{{base_url}}/api/delivery/tracking/{{sales_number}}",
               "host": ["{{base_url}}"], "path": ["api","delivery","tracking","{{sales_number}}"]
             },
-            "description": "Customer-facing tracking. Returns current location, map_status, and merged order detail. No auth required."
+            "description": "Customer-facing tracking. Returns current location, map_status, merged order detail, and `active_deliveries_count` (other in-progress deliveries for the same driver, excluding this one). No auth required."
           }
         }
       ]
@@ -210,7 +178,7 @@
 
     {
       "name": "Driver",
-      "description": "Driver-facing endpoints: report GPS position and view assigned orders.\nGPS endpoints require X-API-Key (driver.py router).\nOrder list does not require auth (delivery.py router).",
+      "description": "Driver-facing endpoints: report GPS position and view assigned orders.\nGPS report/read require X-API-Key (driver.py router). A public location-read variant exists for customer maps.\nOrder list does not require auth (delivery.py router).",
       "item": [
         {
           "name": "Report GPS Position",
@@ -237,7 +205,19 @@
               "raw": "{{base_url}}/api/drivers/{{driver_id}}/location",
               "host": ["{{base_url}}"], "path": ["api","drivers","{{driver_id}}","location"]
             },
-            "description": "Returns the driver's last known latitude/longitude and updated_at timestamp."
+            "description": "Returns the driver's last known latitude/longitude and updated_at timestamp. Requires X-API-Key."
+          }
+        },
+        {
+          "name": "Get Driver Last Location (Public)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/drivers/{{driver_id}}/location/public",
+              "host": ["{{base_url}}"], "path": ["api","drivers","{{driver_id}}","location","public"]
+            },
+            "description": "Same payload as the authenticated location endpoint, but exposed publicly for customer tracking maps. No auth required."
           }
         },
         {
@@ -246,14 +226,13 @@
             "auth": { "type": "noauth" },
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/delivery/driver/{{driver_id}}?limit=10",
+              "raw": "{{base_url}}/api/delivery/driver/{{driver_id}}?limit=50",
               "host": ["{{base_url}}"], "path": ["api","delivery","driver","{{driver_id}}"],
               "query": [
-                { "key": "limit", "value": "10", "description": "Max deliveries to return" },
-                { "key": "query", "value": "",   "description": "Pagination cursor / search query", "disabled": true }
+                { "key": "limit", "value": "50", "description": "Max deliveries to return (default 50)" }
               ]
             },
-            "description": "Returns deliveries assigned to this driver, with merged order detail. No auth required."
+            "description": "Returns deliveries assigned to this driver, sourced from the deligo integration service and joined with local delivery rows. No auth required."
           }
         }
       ]
@@ -261,7 +240,7 @@
 
     {
       "name": "Shop",
-      "description": "Shop-facing endpoints: view orders assigned to a store. No auth required.\nRouter: src/api/endpoints/delivery.py — prefix /api/delivery",
+      "description": "Shop-facing endpoints: view orders assigned to a store and a status-count summary. No auth required.\nRouter: src/api/endpoints/delivery.py — prefix /api/delivery",
       "item": [
         {
           "name": "List Store Orders",
@@ -273,10 +252,22 @@
               "host": ["{{base_url}}"], "path": ["api","delivery","shop","{{store_id}}"],
               "query": [
                 { "key": "limit", "value": "10", "description": "Max deliveries to return" },
-                { "key": "query", "value": "",   "description": "Pagination cursor / search query", "disabled": true }
+                { "key": "query", "value": "",   "description": "Search / pagination cursor", "disabled": true }
               ]
             },
             "description": "Returns delivery orders for this store, with merged order detail. No auth required."
+          }
+        },
+        {
+          "name": "Shop Orders Summary",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/delivery/shop/{{store_id}}/summary",
+              "host": ["{{base_url}}"], "path": ["api","delivery","shop","{{store_id}}","summary"]
+            },
+            "description": "Aggregate status counts for a shop's deliveries. Status is derived from the order service detail:\n\n- `completed` — `is_closed` is truthy\n- `in_progress` — `is_start_driver` is truthy\n- `pending` — everything else\n- `cancelled` — reserved (always 0 today)\n\nResponse: `{ status, data: { pending, in_progress, completed, cancelled, total } }`."
           }
         }
       ]
@@ -325,14 +316,14 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"formattedAddress\": \"Сүхбаатар дүүрэг, Улаанбаатар, Монгол\",\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"city\": \"Улаанбаатар\",\n  \"country\": \"Mongolia\",\n  \"coordinates\": { \"lat\": 47.9184, \"lng\": 106.9177 }\n}",
+              "raw": "{\n  \"formattedAddress\": \"Сүхбаатар дүүрэг, Улаанбаатар, Монгол\",\n  \"streetAddress\": \"Peace Avenue 17\",\n  \"district\": \"Сүхбаатар\",\n  \"khoroo\": \"1-р хороо\",\n  \"city\": \"Улаанбаатар\",\n  \"state\": null,\n  \"country\": \"Mongolia\",\n  \"postalCode\": \"14200\",\n  \"building\": null,\n  \"coordinates\": { \"lat\": 47.9184, \"lng\": 106.9177 }\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/location/parse",
               "host": ["{{base_url}}"], "path": ["api","location","parse"]
             },
-            "description": "Accepts a Google Maps frontend location object and normalises it into the standard Location model."
+            "description": "Accepts a Google Maps frontend location object and normalises it into the standard Location model.\n\nAll fields are optional. Accepted keys: `formattedAddress`, `streetAddress`, `city`, `state`, `district`, `khoroo`, `country`, `postalCode`, `building`, `coordinates: { lat, lng }`."
           }
         }
       ]

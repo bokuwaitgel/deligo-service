@@ -15,8 +15,6 @@ class DeliveryOrder(Base):
     sales_number: Mapped[str] = mapped_column(String, primary_key=True)
     sales_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     store_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    driver_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    driver_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     customer_address: Mapped[str] = mapped_column(Text, nullable=False)
     customer_location: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     map_status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)

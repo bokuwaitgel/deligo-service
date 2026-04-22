@@ -7,7 +7,6 @@ from typing import Optional
 from schemas.database.delivery_db import DeliveryOrder
 from schemas.delivery import DeliveryOrderCreate, DeliveryOrderResponse, Location, MapStatus
 from src.repositories.delivery import DeliveryRepository
-from src.repositories.driver_location import DriverLocationRepository
 from src.services.location import geocode_address
 
 logger = logging.getLogger(__name__)
@@ -37,19 +36,11 @@ def create_delivery(repo: DeliveryRepository, payload: DeliveryOrderCreate) -> D
         sales_number=payload.sales_number,
         sales_id=payload.sales_id,
         store_id=payload.store_id,
-        driver_id=payload.driver_id,
-        driver_name=payload.driver_name,
         customer_address=payload.customer_address,
         customer_location=_geocode(payload.customer_address, payload.is_countryside),
         tracking_url=_build_tracking_url(payload.sales_number),
         map_status=MapStatus.PENDING,
     )
-
-    if payload.driver_id:
-        driver_loc = DriverLocationRepository(repo.db_session)
-        if driver_loc.get_by_driver_id(payload.driver_id) is None:
-            driver_loc.upsert(payload.driver_id, 47.9184, 106.9175)  # Default to UB center if driver location not found
-
 
     return DeliveryOrderResponse.model_validate(repo.create(order))
 

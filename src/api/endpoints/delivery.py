@@ -21,7 +21,8 @@ from src.services.delivery import (
     update_location,
     update_location_by_address,
 )
-from src.services.middleware_order import get_order_detail, get_orders_by_sales_numbers
+from src.services.deligo_integration import change_sales_status, get_driver_sales, get_sales_detail
+from src.services.middleware_order import get_orders_by_sales_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,15 @@ async def get_delivery_order(
     repo: DeliveryRepository = Depends(get_delivery_repository),
     api_key: str = Depends(require_api_key),
 ):
-    """Get a delivery order by sales number."""
+    """Get a delivery order by sales number, enriched with deligo sales detail (includes driver)."""
     try:
         delivery_order = get_delivery(repo, sales_number)
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
-        detail = get_order_detail(delivery_order.sales_number)
-        if detail:
-            delivery_order.detail = detail
+        if delivery_order.sales_id:
+            detail = get_sales_detail(delivery_order.sales_id)
+            if detail:
+                delivery_order.detail = detail
         return delivery_order
     except HTTPException:
         raise
@@ -107,6 +109,30 @@ async def update_delivery_address(
         logger.error(f"Error updating delivery address: {e}")
         raise HTTPException(status_code=500, detail="Failed to update delivery address")
     
+@router.post("/{sales_number}/start", dependencies=[Depends(require_api_key)])
+async def start_delivery_order(
+    sales_number: str,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Driver marks the delivery as started — sets deligo wfm_status to 8 (salesDriverDone).
+
+    Looks up the local delivery row to resolve `sales_id`, then calls the deligo
+    changestatus API. Only the start-delivery transition is supported here.
+    """
+    delivery = repo.get_by_sales_number(sales_number)
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+
+    sales_id = delivery.sales_id
+    if not sales_id:
+        raise HTTPException(status_code=422, detail="sales_id not available for this delivery")
+
+    ok = change_sales_status(str(sales_id), 8)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to update status in deligo")
+    return {"status": "ok", "sales_number": sales_number, "wfm_status_id": 8}
+
+
 @router.post("/{sales_number}/map_edit", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 async def complete_delivery_order(
     sales_number: str,
@@ -134,19 +160,22 @@ async def track_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-
     try:
         delivery_order = get_delivery(repo, sales_number)
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
-        detail = get_order_detail(delivery_order.sales_number)
+        detail = get_sales_detail(delivery_order.sales_id) if delivery_order.sales_id else None
         if detail:
             delivery_order.detail = detail
-        #get driver orders where 
-        driver_deliveries = await get_driver_deliveries(driver_id=delivery_order.driver_id, query=None, limit=100, repo=repo)
-        #where detail is_closed is not 1 or True, and sales_number is not the current one, and map_status is not completed
-        active_deliveries = [d for d in driver_deliveries if d.detail and d.detail.get("is_closed") not in [1, True]]
-        delivery_order.active_deliveries_count = len(active_deliveries)
+            driver_id = detail.get("driver_id")
+            if driver_id is not None:
+                driver_sales = get_driver_sales(str(driver_id), page_size=200)
+                active = [
+                    s for s in driver_sales
+                    if s.get("sales_number") != sales_number
+                    and s.get("wfm_status_id") not in (3, 12, 23)
+                ]
+                delivery_order.active_deliveries_count = len(active)
         return delivery_order
     except HTTPException:
         raise
@@ -165,23 +194,33 @@ async def track_delivery_order(
 @router.get("/driver/{driver_id}", response_model=list[DeliveryOrderResponse])
 async def get_driver_deliveries(
     driver_id: str,
-    query: Optional[str] = Query(None, description="Search query for filtering deliveries"),
-    limit: int = Query(10, description="Maximum number of deliveries to return"),
+    limit: int = Query(50, description="Maximum number of deliveries to return"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-    """Get delivery orders assigned to a driver. This is a placeholder for the actual driver dashboard functionality."""
+    """List a driver's orders from the deligo integration API, joined with our local delivery rows."""
     try:
-        deliveries = repo.get_by_driver_id_paginated(driver_id, cursor=query, limit=limit)
-        #get details for each delivery and merge into response
-        response = []
-        for delivery in deliveries:
-            detail = get_orders_by_sales_numbers([delivery.sales_number])
-            delivery_response = DeliveryOrderResponse.model_validate(delivery)
-            if detail:
-                delivery_response.detail = detail[0]
-            response.append(delivery_response)
-        return response
+        sales = get_driver_sales(driver_id, page_size=limit)
+        if not sales:
+            return []
 
+        details_by_number: dict[str, dict] = {}
+        for s in sales:
+            sn = s.get("sales_number")
+            if isinstance(sn, str) and sn:
+                details_by_number[sn] = s
+
+        sales_numbers = list(details_by_number.keys())
+        local_rows = {d.sales_number: d for d in repo.get_by_sales_numbers(sales_numbers)}
+
+        response: list[DeliveryOrderResponse] = []
+        for sales_number in sales_numbers:
+            local = local_rows.get(sales_number)
+            if local is None:
+                continue
+            item = DeliveryOrderResponse.model_validate(local)
+            item.detail = details_by_number[sales_number]
+            response.append(item)
+        return response
     except HTTPException:
         raise
     except Exception as e:

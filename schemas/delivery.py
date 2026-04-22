@@ -48,8 +48,6 @@ class DeliveryOrderCreate(BaseModel):
     sales_number: str = Field(..., description="Unique sales number from the order service")
     sales_id: Optional[str] = Field(None, description="Sales ID from the order service")
     store_id: str = Field(..., description="Store/shop ID")
-    driver_id: str = Field(..., description="Driver ID")
-    driver_name: Optional[str] = Field(None, description="Driver name")
     customer_address: str = Field(..., description="Raw address string to geocode")
     is_countryside: bool = Field(False, description="Skip Mongolia/UB suffix in geocoding")
 
@@ -64,13 +62,11 @@ class DeliveryOrderResponse(BaseModel):
     sales_number: str
     sales_id: Optional[str] = None
     store_id: str
-    driver_id: str
-    driver_name: Optional[str] = None
     customer_address: str
     customer_location: Optional[Location] = None
     map_status: MapStatus
-    detail: Optional[dict] = None  # Placeholder for merged order detail data
+    detail: Optional[dict] = None  # Merged order detail from deligo integration
     tracking_url: Optional[str] = None
-    active_deliveries_count: Optional[int] = None  # Number of active deliveries for the driver, to be filled in the endpoint
+    active_deliveries_count: Optional[int] = None
     created_at: datetime
     updated_at: datetime

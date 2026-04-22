@@ -46,26 +46,6 @@ class DeliveryRepository:
         self.db_session.commit()
         return True
 
-    def get_by_driver_id_paginated(
-        self, driver_id: str, cursor: Optional[str], limit: int
-    ) -> List[DeliveryOrder]:
-        query = (
-            self.db_session.query(DeliveryOrder)
-            .filter(DeliveryOrder.driver_id == driver_id)
-            .order_by(DeliveryOrder.created_at.desc(), DeliveryOrder.sales_number.desc())
-        )
-        if cursor:
-            anchor = self.get_by_sales_number(cursor)
-            if anchor is not None and anchor.created_at is not None:
-                query = query.filter(
-                    (DeliveryOrder.created_at < anchor.created_at)
-                    | (
-                        (DeliveryOrder.created_at == anchor.created_at)
-                        & (DeliveryOrder.sales_number < cursor)
-                    )
-                )
-        return query.limit(limit + 1).all()
-
     def get_by_sales_numbers(self, sales_numbers: List[str]) -> List[DeliveryOrder]:
         """Fetch full order rows for a list of sales numbers in one query."""
         return (
