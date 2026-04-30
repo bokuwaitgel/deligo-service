@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api.endpoints.auth import router as auth_router
 from src.api.endpoints.health import router as health_router
 from src.api.endpoints.location import router as location_router
 from src.api.endpoints.delivery import router as delivery_router
@@ -47,6 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(location_router)
 app.include_router(delivery_router)
