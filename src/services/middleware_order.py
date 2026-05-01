@@ -102,22 +102,34 @@ def get_orders_by_sales_numbers(sales_numbers: List[str]) -> List[Dict[str, Any]
     Returns a list of order details for the given sales numbers. If an order is
     not found, it will be skipped in the results. Falls back to dummy data when
     ORDER_SERVICE_URL is not configured (development / local use).
-    """
-    if not ORDER_SERVICE_URL:
-        logger.debug("ORDER_SERVICE_URL not set — returning dummy order details for %s", sales_numbers)
-        return [order for sn in sales_numbers if (order := _dummy_order_detail(sn)) is not None]
 
-    orders = []
+    External API shape follows Deligo Postman "get order info":
+    POST /api/sales/get with JSON body {"id": <sales_id>}.
+    """
+
+    orders: List[Dict[str, Any]] = []
     try:
-        url = f"{ORDER_SERVICE_URL}/api/orders/batch"
-        response = httpx.post(url, json={"sales_numbers": sales_numbers}, timeout=5.0)
-        if response.status_code == 200:
-            return response.json()
-        if response.status_code == 404:
-            return []
-        logger.warning(
-            "Order service returned %s for order %s", response.status_code, sales_numbers
-        )
+        url = f"https://api.deligo.mn/api/sales/get"
+        for sales_number in sales_numbers:
+            # Deligo sales/get expects sales_id in `id`; fallback to the incoming value.
+            # In local/dev data, we can resolve sales_id from the dummy map.
+            sales_id = _DUMMY_ORDERS.get(sales_number, {}).get("sales_id", sales_number)
+            response = httpx.post(url, json={"id": sales_id}, timeout=5.0)
+            if response.status_code == 404:
+                continue
+            if response.status_code != 200:
+                logger.warning(
+                    "Order service returned %s for id=%s", response.status_code, sales_id
+                )
+                continue
+
+            payload = response.json()
+            detail = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(detail, dict):
+                continue
+            # Ensure downstream mapping by sales_number always works.
+            detail.setdefault("sales_number", sales_number)
+            orders.append(detail)
     except Exception:
         logger.warning("Failed to reach order service for order %s", sales_numbers, exc_info=True)
 
