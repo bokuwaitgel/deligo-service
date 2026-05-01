@@ -16,7 +16,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DELIGO_API_URL = os.getenv("DELIGO_API_URL", "https://api.deligo.mn").rstrip("/")
-_HTTP_TIMEOUT = 10.0
+_HTTP_TIMEOUT_SECONDS = float(os.getenv("DELIGO_HTTP_TIMEOUT", "20"))
+_HTTP_TIMEOUT = httpx.Timeout(_HTTP_TIMEOUT_SECONDS, connect=5.0)
 
 
 class DeligoApiError(Exception):
@@ -82,23 +83,32 @@ def _order_list(token: str, criteria_field: str, value: str, offset: int, page_s
         },
         "paging": {"offset": offset, "pageSize": page_size},
     }
+    print(f"[Deligo] POST /api/sales/integration  {criteria_field}={value}  offset={offset} pageSize={page_size}")
     body = _post("/api/sales/integration", json=payload, token=token)
     if isinstance(body, list):
+        print(f"[Deligo] Got {len(body)} orders (list)")
         return body
     if isinstance(body, dict):
         for key in ("data", "items"):
-            value = body.get(key)
-            if isinstance(value, list):
-                return value
-            if isinstance(value, dict):
-                inner = value.get("items") or value.get("data")
+            chunk = body.get(key)
+            if isinstance(chunk, list):
+                print(f"[Deligo] Got {len(chunk)} orders (body.{key})")
+                return chunk
+            if isinstance(chunk, dict):
+                inner = chunk.get("items") or chunk.get("data")
                 if isinstance(inner, list):
+                    print(f"[Deligo] Got {len(inner)} orders (body.{key}.inner)")
                     return inner
+    print(f"[Deligo] No orders found, body keys: {list(body.keys()) if isinstance(body, dict) else type(body)}")
     return []
 
 
 def driver_orders(token: str, driver_id: str, offset: int = 0, page_size: int = 50) -> List[Dict[str, Any]]:
     return _order_list(token, "es.driver_id", driver_id, offset, page_size)
+
+
+def shop_orders(token: str, company_id: str, offset: int = 0, page_size: int = 50) -> List[Dict[str, Any]]:
+    return _order_list(token, "es.company_id", company_id, offset, page_size)
 
 
 def change_status(token: str, sales_id: str, status_id: int) -> bool:
@@ -123,6 +133,14 @@ def change_status(token: str, sales_id: str, status_id: int) -> bool:
 
 def pick_driver_id(user: Dict[str, Any]) -> Optional[str]:
     for key in ("driver_id", "id", "user_id"):
+        v = user.get(key)
+        if v is not None:
+            return str(v)
+    return None
+
+
+def pick_company_id(user: Dict[str, Any]) -> Optional[str]:
+    for key in ("company_id", "store_id"):
         v = user.get(key)
         if v is not None:
             return str(v)

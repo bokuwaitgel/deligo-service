@@ -3,14 +3,16 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from schemas.delivery import (
     AddressUpdateRequest,
     DeliveryOrderCreate,
     DeliveryOrderResponse,
     Location,
+    MapStatusUpdateRequest,
 )
+from schemas.database.delivery_db import DeliveryOrder
 from src.api.auth_utils import require_api_key
 from src.dependencies import get_delivery_repository
 from src.repositories.delivery import DeliveryRepository
@@ -21,12 +23,98 @@ from src.services.delivery import (
     update_location,
     update_location_by_address,
 )
-from src.services.deligo_integration import change_sales_status, get_driver_sales, get_sales_detail
+from src.services.deligo_integration import change_sales_status, get_driver_sales, get_sales_detail, structure_sales_detail
 from src.services.middleware_order import get_orders_by_sales_numbers
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/delivery", tags=["delivery"])
+
+
+def _as_str(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _extract_customer_location(detail: dict) -> Optional[dict]:
+    # Accept common coordinate field variations returned by third-party payloads.
+    lat_raw = (
+        detail.get("latitude")
+        or detail.get("lat")
+        or detail.get("customer_latitude")
+        or detail.get("customer_lat")
+    )
+    lng_raw = (
+        detail.get("longitude")
+        or detail.get("lng")
+        or detail.get("customer_longitude")
+        or detail.get("customer_lng")
+    )
+
+    if lat_raw is None or lng_raw is None:
+        return None
+
+    try:
+        latitude = float(lat_raw)
+        longitude = float(lng_raw)
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "formatted_address": _as_str(detail.get("customer_address"))
+        or _as_str(detail.get("formatted_address")),
+    }
+
+
+def _upsert_local_delivery_from_detail(repo: DeliveryRepository, detail: dict) -> Optional[DeliveryOrder]:
+    sales_number = _as_str(detail.get("sales_number"))
+    if not sales_number:
+        return None
+
+    sales_id = _as_str(detail.get("sales_id"))
+    store_id = _as_str(detail.get("store_id")) or "unknown"
+    company_id = _as_str(detail.get("company_id"))
+    customer_address = (
+        _as_str(detail.get("customer_address"))
+        or _as_str(detail.get("address"))
+        or "Address not provided"
+    )
+    customer_location = _extract_customer_location(detail)
+
+    existing = repo.get_by_sales_number(sales_number)
+    if existing is None:
+        created = DeliveryOrder(
+            sales_number=sales_number,
+            sales_id=sales_id,
+            store_id=store_id,
+            company_id=company_id,
+            customer_address=customer_address,
+            customer_location=customer_location,
+            map_status="pending",
+        )
+        return repo.create(created)
+
+    patch: dict[str, object] = {}
+    if not existing.sales_id and sales_id:
+        patch["sales_id"] = sales_id
+    if (not existing.store_id or existing.store_id == "unknown") and store_id:
+        patch["store_id"] = store_id
+    if not existing.company_id and company_id:
+        patch["company_id"] = company_id
+    if (not existing.customer_address or existing.customer_address == "Address not provided") and customer_address:
+        patch["customer_address"] = customer_address
+    if existing.customer_location is None and customer_location is not None:
+        patch["customer_location"] = customer_location
+
+    if patch:
+        updated = repo.update_partial(sales_number, patch)
+        if updated is not None:
+            return updated
+    return existing
 
 
 
@@ -113,11 +201,14 @@ async def update_delivery_address(
 async def start_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
+    x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
 ):
     """Driver marks the delivery as started — sets deligo wfm_status to 8 (salesDriverDone).
 
     Looks up the local delivery row to resolve `sales_id`, then calls the deligo
-    changestatus API. Only the start-delivery transition is supported here.
+    changestatus API using the driver's own Deligo JWT when supplied via the
+    X-Driver-Token header (matching the Postman «change_status /Driver/» request),
+    falling back to the service-account token otherwise.
     """
     delivery = repo.get_by_sales_number(sales_number)
     if not delivery:
@@ -127,7 +218,7 @@ async def start_delivery_order(
     if not sales_id:
         raise HTTPException(status_code=422, detail="sales_id not available for this delivery")
 
-    ok = change_sales_status(str(sales_id), 8)
+    ok = change_sales_status(str(sales_id), 8, driver_token=x_driver_token)
     if not ok:
         raise HTTPException(status_code=502, detail="Failed to update status in deligo")
     return {"status": "ok", "sales_number": sales_number, "wfm_status_id": 8}
@@ -149,6 +240,25 @@ async def complete_delivery_order(
     except Exception as e:
         logger.error(f"Error completing delivery order: {e}")
         raise HTTPException(status_code=500, detail="Failed to complete delivery order")
+
+
+@router.patch("/{sales_number}/map_status", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+async def set_delivery_map_status(
+    sales_number: str,
+    payload: MapStatusUpdateRequest,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Set delivery map_status explicitly (pending/completed) from shop workflow."""
+    try:
+        updated_order = repo.update_partial(sales_number, {"map_status": payload.map_status.value})
+        if not updated_order:
+            raise HTTPException(status_code=404, detail="Delivery order not found")
+        return updated_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating map status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update map status")
     
 # ---------------------------------------------------------------------------
 # User View Endpoints 
@@ -197,7 +307,7 @@ async def get_driver_deliveries(
     limit: int = Query(50, description="Maximum number of deliveries to return"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-    """List a driver's orders from the deligo integration API, joined with our local delivery rows."""
+    """List driver orders and auto-sync missing local delivery rows from Deligo payload."""
     try:
         sales = get_driver_sales(driver_id, page_size=limit)
         if not sales:
@@ -207,10 +317,21 @@ async def get_driver_deliveries(
         for s in sales:
             sn = s.get("sales_number")
             if isinstance(sn, str) and sn:
-                details_by_number[sn] = s
+                details_by_number[sn] = structure_sales_detail(s)
 
         sales_numbers = list(details_by_number.keys())
         local_rows = {d.sales_number: d for d in repo.get_by_sales_numbers(sales_numbers)}
+
+        # Ensure every Deligo order has a local delivery row (for map/location workflows).
+        for sales_number in sales_numbers:
+            if sales_number not in local_rows:
+                created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number])
+                if created is not None:
+                    local_rows[sales_number] = created
+            else:
+                refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number])
+                if refreshed is not None:
+                    local_rows[sales_number] = refreshed
 
         response: list[DeliveryOrderResponse] = []
         for sales_number in sales_numbers:
@@ -242,9 +363,10 @@ async def get_shop_summary(
     store_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-    """Get summary counts for a shop's deliveries, deriving status from order service detail."""
+    """Get summary counts by company scope (path param kept as store_id for backward compatibility)."""
+    company_id = store_id
     try:
-        deliveries = repo.get_by_shop_id_paginated(store_id, cursor=None, limit=10000)
+        deliveries = repo.get_by_shop_id_paginated(company_id, cursor=None, limit=10000)
         sales_numbers = [d.sales_number for d in deliveries]
         details_map: dict = {}
         if sales_numbers:
@@ -254,11 +376,19 @@ async def get_shop_summary(
         counts = {"pending": 0, "in_progress": 0, "completed": 0, "cancelled": 0}
         for delivery in deliveries:
             detail = details_map.get(delivery.sales_number, {})
-            is_closed = detail.get("is_closed", 0)
-            is_start_driver = detail.get("is_start_driver")
-            if is_closed == 1 or is_closed is True:
+            status_code = detail.get("status_code")
+            wfm_raw = detail.get("wfm_status_id")
+            wfm_status_id = str(wfm_raw) if wfm_raw is not None else None
+
+            is_cancelled = status_code == "deliveryCancel" or wfm_status_id == "12"
+            is_completed = status_code in {"salesDone", "exchanged"} or wfm_status_id in {"3", "23"}
+            is_in_progress = status_code == "salesDriverDone" or wfm_status_id == "8"
+
+            if is_cancelled:
+                counts["cancelled"] += 1
+            elif is_completed:
                 counts["completed"] += 1
-            elif is_start_driver is not None and is_start_driver is not False and is_start_driver != 0:
+            elif is_in_progress:
                 counts["in_progress"] += 1
             else:
                 counts["pending"] += 1
@@ -285,16 +415,20 @@ async def get_shop_deliveries(
     limit: int = Query(10, description="Maximum number of deliveries to return"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-    """Get delivery orders assigned to a shop. This is a placeholder for the actual shop dashboard functionality."""
+    """Get delivery orders by company scope (path param kept as store_id for backward compatibility)."""
+    company_id = store_id
     try:
-        deliveries = repo.get_by_shop_id_paginated(store_id, cursor=query, limit=limit)
-        #get details for each delivery and merge into response
+        deliveries = repo.get_by_shop_id_paginated(company_id, cursor=query, limit=limit)
+        # get details for each delivery and merge into response
         response = []
         for delivery in deliveries:
             detail = get_orders_by_sales_numbers([delivery.sales_number])
             delivery_response = DeliveryOrderResponse.model_validate(delivery)
             if detail:
-                delivery_response.detail = detail[0]
+                detail_item = dict(detail[0])
+                # Keep both IDs available in payload while company_id remains the main scope.
+                detail_item.setdefault("company_id", delivery.store_id)
+                delivery_response.detail = detail_item
             response.append(delivery_response)
         return response
 

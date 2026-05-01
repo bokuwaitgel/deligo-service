@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import JSON, DateTime, String, Text, func
+from sqlalchemy import JSON, DateTime, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -15,6 +15,9 @@ class DeliveryOrder(Base):
     sales_number: Mapped[str] = mapped_column(String, primary_key=True)
     sales_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     store_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    company_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    driver_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    sort_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     customer_address: Mapped[str] = mapped_column(Text, nullable=False)
     customer_location: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     map_status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)

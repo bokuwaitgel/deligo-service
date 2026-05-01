@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from schemas.database.delivery_db import DeliveryOrder
@@ -63,12 +64,44 @@ class DeliveryRepository:
         )
         return [r.sales_number for r in rows]
 
+    def get_max_sort_order_for_driver(self, driver_id: str) -> Optional[int]:
+        return (
+            self.db_session.query(func.max(DeliveryOrder.sort_order))
+            .filter(DeliveryOrder.driver_id == driver_id)
+            .scalar()
+        )
+
+    def set_driver_sort_orders(self, driver_id: str, sales_numbers: List[str]) -> int:
+        rows = (
+            self.db_session.query(DeliveryOrder)
+            .filter(
+                DeliveryOrder.driver_id == driver_id,
+                DeliveryOrder.sales_number.in_(sales_numbers),
+            )
+            .all()
+        )
+        rows_by_sales_number = {row.sales_number: row for row in rows}
+
+        updated_count = 0
+        for index, sales_number in enumerate(sales_numbers):
+            row = rows_by_sales_number.get(sales_number)
+            if row is None:
+                continue
+            if row.sort_order != index:
+                row.sort_order = index
+                updated_count += 1
+
+        if updated_count:
+            self.db_session.commit()
+
+        return len(rows_by_sales_number)
+
     def get_by_shop_id_paginated(
         self, store_id: str, cursor: Optional[str], limit: int
     ) -> List[DeliveryOrder]:
         query = (
             self.db_session.query(DeliveryOrder)
-            .filter(DeliveryOrder.store_id == store_id)
+            .filter(DeliveryOrder.company_id == store_id)
             .order_by(DeliveryOrder.created_at.desc(), DeliveryOrder.sales_number.desc())
         )
         if cursor:

@@ -154,21 +154,47 @@ def get_driver_sales(
     return []
 
 
-def change_sales_status(sales_id: str, status_id: int) -> bool:
+def change_sales_status(sales_id: str, status_id: int, driver_token: Optional[str] = None) -> bool:
     """Change a sales order's wfm status via POST /api/sales/changestatus.
 
-    Returns True on HTTP 200, False otherwise. For now only status_id=8
-    ("salesDriverDone" / driver starts delivery) is used by the service.
+    If `driver_token` is provided the call is made with the driver's own Deligo
+    JWT (matching the Postman «change_status /Driver/» request).  Falls back to
+    the service-account token when not supplied.
+
+    Returns True on HTTP 200, False otherwise.
     """
-    r = _post_with_retry("/api/sales/changestatus", {"id": sales_id, "statusId": status_id})
+    status_label = STATUS_LABEL_MAP.get(status_id, str(status_id))
+    token_source = "driver" if driver_token else "service-account"
+    print(f"[Deligo] POST /api/sales/changestatus  sales_id={sales_id}  statusId={status_id} ({status_label})  token={token_source}")
+
+    if driver_token:
+        headers = {"Authorization": f"Bearer {driver_token}"}
+        url = f"{DELIGO_API_URL}/api/sales/changestatus"
+        try:
+            r: Optional[httpx.Response] = httpx.post(
+                url,
+                json={"id": sales_id, "statusId": status_id},
+                headers=headers,
+                timeout=_HTTP_TIMEOUT,
+            )
+        except Exception:
+            logger.warning("Deligo changestatus request failed with driver token", exc_info=True)
+            print(f"[Deligo] changestatus failed (no response) for sales_id={sales_id}")
+            return False
+    else:
+        r = _post_with_retry("/api/sales/changestatus", {"id": sales_id, "statusId": status_id})
+
     if r is None:
+        print(f"[Deligo] changestatus failed (no response) for sales_id={sales_id}")
         return False
     if r.status_code != 200:
         logger.warning(
             "Deligo changestatus returned %s for sales_id=%s statusId=%s",
             r.status_code, sales_id, status_id,
         )
+        print(f"[Deligo] changestatus failed HTTP {r.status_code} for sales_id={sales_id}: {r.text[:200]}")
         return False
+    print(f"[Deligo] changestatus OK for sales_id={sales_id} statusId={status_id} ({status_label})")
     return True
 
 
@@ -180,15 +206,19 @@ def get_sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
     """
     if not sales_id:
         return None
+    print(f"[Deligo] POST /api/sales/get  id={sales_id}")
     r = _post_with_retry("/api/sales/get", {"id": sales_id})
     if r is None or r.status_code != 200:
         if r is not None and r.status_code not in (401, 404):
             logger.warning("Deligo sales detail returned %s for id=%s", r.status_code, sales_id)
+        print(f"[Deligo] sales/get failed for id={sales_id}: {r.status_code if r else 'None'}")
         return None
     body = r.json()
     data = body.get("data")
     if not isinstance(data, dict):
+        print(f"[Deligo] sales/get unexpected data type for id={sales_id}: {type(data)}")
         return None
+    print(f"[Deligo] sales/get OK for id={sales_id}")
     return structure_sales_detail(data)
 
 

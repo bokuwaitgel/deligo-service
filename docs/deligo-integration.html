@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deligo Integration Documentation</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.65;
+      color: #1e1e2e;
+      background: #fff;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 40px;
+    }
+
+    /* ── Typography ───────────────────────────────────────────── */
+    h1 { font-size: 28px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+    h2 { font-size: 20px; font-weight: 700; color: #0f172a; margin: 40px 0 12px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
+    h3 { font-size: 15px; font-weight: 700; color: #1e40af; margin: 28px 0 8px; }
+    h4 { font-size: 13px; font-weight: 700; color: #374151; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+    p  { margin-bottom: 10px; }
+    ul, ol { margin: 8px 0 10px 20px; }
+    li { margin-bottom: 4px; }
+    a  { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    strong { font-weight: 600; }
+
+    /* ── Cover ────────────────────────────────────────────────── */
+    .cover {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-left: 5px solid #2563eb;
+      padding-left: 20px;
+      margin-bottom: 48px;
+    }
+    .cover .subtitle { font-size: 13px; color: #6b7280; }
+    .cover .meta { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+
+    /* ── Callouts ─────────────────────────────────────────────── */
+    .callout {
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 14px 0;
+      font-size: 13px;
+    }
+    .callout.info  { background: #eff6ff; border-left: 4px solid #3b82f6; color: #1e40af; }
+    .callout.warn  { background: #fffbeb; border-left: 4px solid #f59e0b; color: #92400e; }
+    .callout.note  { background: #f0fdf4; border-left: 4px solid #22c55e; color: #166534; }
+
+    /* ── Code ─────────────────────────────────────────────────── */
+    code {
+      font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+      font-size: 12.5px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 16px 18px;
+      overflow-x: auto;
+      margin: 10px 0 16px;
+      line-height: 1.55;
+    }
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      font-size: 12.5px;
+    }
+
+    /* ── Tables ───────────────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 10px 0 16px;
+    }
+    thead tr { background: #1e40af; color: #fff; }
+    thead th { padding: 8px 12px; text-align: left; font-weight: 600; }
+    tbody tr:nth-child(odd)  { background: #f8fafc; }
+    tbody tr:nth-child(even) { background: #fff; }
+    tbody td { padding: 7px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    tbody td code { background: #e2e8f0; border: none; }
+
+    /* ── Badges ───────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 2px 7px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .badge.get    { background: #dcfce7; color: #166534; }
+    .badge.post   { background: #dbeafe; color: #1e40af; }
+    .badge.req    { background: #fee2e2; color: #991b1b; }
+    .badge.opt    { background: #f3f4f6; color: #374151; }
+    .badge.open   { background: #fef9c3; color: #713f12; }
+    .badge.closed { background: #fce7f3; color: #9d174d; }
+
+    /* ── Section divider ──────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid #e2e8f0; margin: 36px 0; }
+
+    /* ── Status grid ──────────────────────────────────────────── */
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 8px;
+      margin: 10px 0 16px;
+    }
+    .status-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 8px 12px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+    .status-id {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e40af;
+      min-width: 24px;
+    }
+    .status-info .code  { font-family: monospace; font-size: 12px; color: #374151; }
+    .status-info .label { font-size: 12px; color: #6b7280; }
+
+    /* ── Print ────────────────────────────────────────────────── */
+    @media print {
+      body { padding: 20px 24px; font-size: 13px; }
+      h2   { page-break-before: auto; }
+      pre, table, .callout { page-break-inside: avoid; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════
+     COVER
+══════════════════════════════════════════════════════════════ -->
+<div class="cover">
+  <h1>Deligo Integration Documentation</h1>
+  <span class="subtitle">Deligo Mapper Service — External &amp; Internal API Integration Guide</span>
+  <span class="meta">Version 1.0 &nbsp;·&nbsp; Last updated May 2, 2026</span>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     TABLE OF CONTENTS
+══════════════════════════════════════════════════════════════ -->
+<h2>Table of Contents</h2>
+<ol>
+  <li><a href="#overview">Overview</a></li>
+  <li><a href="#architecture">Architecture</a></li>
+  <li><a href="#order-service-contract">Part A — Order Service Integration Contract</a>
+    <ol>
+      <li><a href="#config-order">Configuration</a></li>
+      <li><a href="#endpoint-single">GET /api/orders/{sales_number}</a></li>
+      <li><a href="#endpoint-batch">POST /api/orders/batch</a></li>
+      <li><a href="#field-reference">Field Reference</a></li>
+      <li><a href="#degraded">Degraded-Mode Behavior</a></li>
+    </ol>
+  </li>
+  <li><a href="#deligo-api-client">Part B — Deligo External API Client</a>
+    <ol>
+      <li><a href="#config-client">Configuration</a></li>
+      <li><a href="#auth">Authentication &amp; Token Cache</a></li>
+      <li><a href="#status-codes">WFM Status Codes</a></li>
+      <li><a href="#client-endpoints">Client Endpoints</a></li>
+    </ol>
+  </li>
+  <li><a href="#security">Security Notes</a></li>
+  <li><a href="#contact">Contact &amp; Next Steps</a></li>
+</ol>
+
+<hr />
+
+<!-- ══════════════════════════════════════════════════════════════
+     1. OVERVIEW
+══════════════════════════════════════════════════════════════ -->
+<h2 id="overview">1. Overview</h2>
+
+<p>
+  <strong>Deligo Mapper</strong> is a delivery location-tracking and map-editing service. It sits
+  between the core Deligo WFM platform and your external order-management service, bridging two
+  integration directions:
+</p>
+
+<ul>
+  <li><strong>Inbound (Part A)</strong> — Deligo Mapper calls <em>your</em> order service to pull
+    order details (items, totals, customer info) and merges them into delivery responses seen by
+    drivers, shops, and customers.</li>
+  <li><strong>Outbound (Part B)</strong> — Deligo Mapper calls the Deligo external API
+    (<code>api.deligo.mn</code>) to list a driver's sales orders, fetch order detail, and change
+    order statuses on behalf of drivers.</li>
+</ul>
+
+<hr />
+
+<!-- ══════════════════════════════════════════════════════════════
+     2. ARCHITECTURE
+══════════════════════════════════════════════════════════════ -->
+<h2 id="architecture">2. Architecture</h2>
+
+<pre><code>┌─────────────────────────────────────────────────────────────────────────┐
+│                         Deligo Mapper Service                           │
+│                                                                         │
+│   ┌──────────────────────┐        ┌──────────────────────────────────┐  │
+│   │  Order Service Proxy │        │    Deligo Integration Client     │  │
+│   │  (middleware_order)  │        │    (deligo_integration.py)       │  │
+│   │                      │        │                                  │  │
+│   │  GET /orders/{id}    │        │  POST /api/sales/integration     │  │
+│   │  POST /orders/batch  │        │  POST /api/sales/get             │  │
+│   └────────┬─────────────┘        │  POST /api/sales/changestatus    │  │
+│            │                      └───────────────┬──────────────────┘  │
+└────────────┼──────────────────────────────────────┼────────────────────┘
+             │                                       │
+             ▼                                       ▼
+   ┌─────────────────────┐              ┌────────────────────────┐
+   │  Your Order Service │              │   api.deligo.mn (WFM)  │
+   │  (ORDER_SERVICE_URL)│              │   Deligo External API  │
+   └─────────────────────┘              └────────────────────────┘
+</code></pre>
+
+<hr />
+
+<!-- ══════════════════════════════════════════════════════════════
+     PART A
+══════════════════════════════════════════════════════════════ -->
+<h2 id="order-service-contract">Part A — Order Service Integration Contract</h2>
+
+<p>
+  This section describes the HTTP contract your order service must implement so that Deligo Mapper
+  can fetch order detail at runtime.
+</p>
+
+<!-- ── A.1 Config ── -->
+<h3 id="config-order">A.1 Configuration</h3>
+
+<p>Set the following environment variable in Deligo Mapper's <code>.env</code>:</p>
+
+<pre><code>ORDER_SERVICE_URL=https://your-order-service.example.com</code></pre>
+
+<div class="callout info">
+  No auth header is required from Deligo Mapper's side by default. Coordinate with the Deligo team
+  if you need an API key or JWT on outgoing requests.
+</div>
+
+<!-- ── A.2 Single order ── -->
+<h3 id="endpoint-single">A.2 Get Single Order</h3>
+
+<p>
+  <span class="badge get">GET</span>
+  &nbsp;<code>{ORDER_SERVICE_URL}/api/orders/{sales_number}</code>
+</p>
+
+<p>Called when a driver, shop, or customer fetches a single delivery order.</p>
+
+<h4>Path Parameter</h4>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td><code>sales_number</code></td><td>string</td><td><code>26031012808A</code></td></tr>
+  </tbody>
+</table>
+
+<h4>Success Response — 200 OK</h4>
+<pre><code>{
+  "sales_number":        "26031012808A",
+  "sales_id":            1773113900534670,
+  "total":               "35000.000000",
+  "created_date":        "2026-03-10 11:38:20",
+  "status_created_date": "2026-03-10 11:39:10",
+  "delivery_date":       "2026-03-10 11:38:00",
+  "customer_phone":      "99758526",
+  "customer_address":    "Хөгжим бүжигийн сургуулийн зүүн талд...",
+  "wfm_status_id":       5,
+  "status_name":         "Хуваарилсан",
+  "status_color":        "lime",
+  "driver_name":         "Test Map jolooch",
+  "driver_id":           1773113257387725,
+  "store_id":            1773113445185308,
+  "store_name":          "Map test delguur",
+  "route_number":        1624,
+  "is_pay":              "0",
+  "is_closed":           0,
+  "is_country":          0,
+  "is_download":         "0",
+  "is_integration":      "0",
+  "is_direct_pay":       "0",
+  "is_start_driver":     null,
+  "exchange_sales_id":   0,
+  "return_sales_id":     null,
+  "order_items": [
+    { "item_id": "1", "name": "Product 1", "image_url": "https://...", "quantity": 2, "price": 10000.0 },
+    { "item_id": "2", "name": "Product 2", "image_url": "https://...", "quantity": 2, "price": 7500.0 }
+  ]
+}</code></pre>
+
+<h4>Error Responses</h4>
+<table>
+  <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>404</code></td><td>Order not found — Deligo shows delivery without detail</td></tr>
+    <tr><td>any other</td><td>Deligo logs a warning and shows delivery without detail</td></tr>
+  </tbody>
+</table>
+
+<!-- ── A.3 Batch ── -->
+<h3 id="endpoint-batch">A.3 Get Multiple Orders (Batch)</h3>
+
+<p>
+  <span class="badge post">POST</span>
+  &nbsp;<code>{ORDER_SERVICE_URL}/api/orders/batch</code>
+</p>
+
+<p>Called when building paginated list views (driver dashboard, shop dashboard). Batches all
+  sales numbers in a single request instead of N individual calls.</p>
+
+<h4>Request Body</h4>
+<pre><code>{
+  "sales_numbers": [
+    "26031012808A",
+    "2603102D34A4",
+    "2603102EED8C"
+  ]
+}</code></pre>
+
+<h4>Success Response — 200 OK</h4>
+<p>Array of order objects in the same shape as the single-order response. Orders not found can be omitted.</p>
+<pre><code>[
+  { "sales_number": "26031012808A", "total": "35000.000000", ... },
+  { "sales_number": "2603102D34A4", "total": "35000.000000", ... }
+]</code></pre>
+
+<h4>Error Responses</h4>
+<table>
+  <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>404</code></td><td>None found — treated as empty list</td></tr>
+    <tr><td>any other</td><td>Deligo logs a warning and returns deliveries without detail</td></tr>
+  </tbody>
+</table>
+
+<!-- ── A.4 Fields ── -->
+<h3 id="field-reference">A.4 Field Reference</h3>
+
+<table>
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>sales_number</code></td><td>string</td><td><span class="badge req">required</span></td><td>Primary key matched against Deligo's record</td></tr>
+    <tr><td><code>sales_id</code></td><td>integer</td><td><span class="badge req">required</span></td><td>Internal order ID</td></tr>
+    <tr><td><code>total</code></td><td>string</td><td><span class="badge req">required</span></td><td>Decimal string e.g. <code>"35000.000000"</code></td></tr>
+    <tr><td><code>created_date</code></td><td>string</td><td><span class="badge req">required</span></td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
+    <tr><td><code>delivery_date</code></td><td>string</td><td><span class="badge req">required</span></td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
+    <tr><td><code>status_created_date</code></td><td>string</td><td><span class="badge opt">optional</span></td><td>When the current status was set</td></tr>
+    <tr><td><code>customer_phone</code></td><td>string</td><td><span class="badge req">required</span></td><td>Shown to driver</td></tr>
+    <tr><td><code>customer_address</code></td><td>string</td><td><span class="badge req">required</span></td><td>Raw address string</td></tr>
+    <tr><td><code>wfm_status_id</code></td><td>integer</td><td><span class="badge opt">optional</span></td><td>WFM numeric status code</td></tr>
+    <tr><td><code>status_name</code></td><td>string</td><td><span class="badge req">required</span></td><td>Human-readable e.g. <code>"Хуваарилсан"</code></td></tr>
+    <tr><td><code>status_color</code></td><td>string</td><td><span class="badge opt">optional</span></td><td>UI color hint e.g. <code>"lime"</code></td></tr>
+    <tr><td><code>driver_name</code></td><td>string</td><td><span class="badge opt">optional</span></td><td></td></tr>
+    <tr><td><code>driver_id</code></td><td>integer</td><td><span class="badge req">required</span></td><td></td></tr>
+    <tr><td><code>store_id</code></td><td>integer</td><td><span class="badge req">required</span></td><td></td></tr>
+    <tr><td><code>store_name</code></td><td>string</td><td><span class="badge req">required</span></td><td></td></tr>
+    <tr><td><code>route_number</code></td><td>integer</td><td><span class="badge opt">optional</span></td><td></td></tr>
+    <tr><td><code>is_pay</code></td><td>string</td><td><span class="badge req">required</span></td><td><code>"0"</code> or <code>"1"</code></td></tr>
+    <tr><td><code>is_closed</code></td><td>integer</td><td><span class="badge opt">optional</span></td><td><code>0</code> or <code>1</code></td></tr>
+    <tr><td><code>is_country</code></td><td>integer</td><td><span class="badge opt">optional</span></td><td><code>0</code> = UB, <code>1</code> = countryside</td></tr>
+    <tr><td><code>is_download</code></td><td>string</td><td><span class="badge opt">optional</span></td><td><code>"0"</code> or <code>"1"</code></td></tr>
+    <tr><td><code>is_integration</code></td><td>string</td><td><span class="badge opt">optional</span></td><td></td></tr>
+    <tr><td><code>is_direct_pay</code></td><td>string</td><td><span class="badge opt">optional</span></td><td></td></tr>
+    <tr><td><code>is_start_driver</code></td><td>string / null</td><td><span class="badge opt">optional</span></td><td></td></tr>
+    <tr><td><code>exchange_sales_id</code></td><td>integer</td><td><span class="badge opt">optional</span></td><td><code>0</code> if none</td></tr>
+    <tr><td><code>return_sales_id</code></td><td>integer / null</td><td><span class="badge opt">optional</span></td><td></td></tr>
+    <tr><td><code>order_items</code></td><td>array</td><td><span class="badge req">required</span></td><td>See table below</td></tr>
+  </tbody>
+</table>
+
+<h4>order_items Object</h4>
+<table>
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Required</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>item_id</code></td><td>string</td><td><span class="badge req">required</span></td></tr>
+    <tr><td><code>name</code></td><td>string</td><td><span class="badge req">required</span></td></tr>
+    <tr><td><code>image_url</code></td><td>string</td><td><span class="badge opt">optional</span></td></tr>
+    <tr><td><code>quantity</code></td><td>integer</td><td><span class="badge req">required</span></td></tr>
+    <tr><td><code>price</code></td><td>float</td><td><span class="badge req">required</span></td></tr>
+  </tbody>
+</table>
+
+<!-- ── A.5 Degraded ── -->
+<h3 id="degraded">A.5 Degraded-Mode Behavior</h3>
+
+<table>
+  <thead><tr><th>Condition</th><th>Behavior</th></tr></thead>
+  <tbody>
+    <tr><td><code>ORDER_SERVICE_URL</code> not set</td><td>Returns hardcoded dummy data (development mode)</td></tr>
+    <tr><td>Order service returns non-200 / non-404</td><td>Logs a warning; returns delivery record without <code>detail</code></td></tr>
+    <tr><td>Order service returns 404</td><td>Treats as not found; delivery shown without detail</td></tr>
+    <tr><td>Network timeout / error</td><td>Logs a warning; delivery location data is always returned</td></tr>
+  </tbody>
+</table>
+
+<hr />
+
+<!-- ══════════════════════════════════════════════════════════════
+     PART B
+══════════════════════════════════════════════════════════════ -->
+<h2 id="deligo-api-client">Part B — Deligo External API Client</h2>
+
+<p>
+  This section documents the outbound HTTP client that Deligo Mapper uses to communicate with
+  <code>api.deligo.mn</code>.
+</p>
+
+<!-- ── B.1 Config ── -->
+<h3 id="config-client">B.1 Configuration</h3>
+
+<table>
+  <thead><tr><th>Environment Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>DELIGO_API_URL</code></td><td><code>https://api.deligo.mn</code></td><td>Base URL of the Deligo WFM API</td></tr>
+    <tr><td><code>DELIGO_API_EMAIL</code></td><td><em>(none)</em></td><td>Service-account email for login</td></tr>
+    <tr><td><code>DELIGO_API_PASSWORD</code></td><td><em>(none)</em></td><td>Service-account password for login</td></tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  If <code>DELIGO_API_EMAIL</code> or <code>DELIGO_API_PASSWORD</code> are not set, all outbound
+  Deligo API calls are skipped and a warning is logged.
+</div>
+
+<!-- ── B.2 Auth ── -->
+<h3 id="auth">B.2 Authentication &amp; Token Cache</h3>
+
+<p>
+  The client uses a Bearer JWT obtained from <code>POST /api/user/login</code>. The token is
+  cached in memory and automatically refreshed 60 seconds before expiry.
+</p>
+
+<h4>Login Request</h4>
+<pre><code>POST /api/user/login
+Content-Type: application/json
+
+{
+  "email":    "service@example.com",
+  "password": "••••••••"
+}
+
+// Response
+{
+  "access_token": "eyJ...",
+  "expires_in":   3600
+}</code></pre>
+
+<h4>Token Refresh Strategy</h4>
+<ul>
+  <li>On every outbound request the cached token expiry is checked.</li>
+  <li>If the token is still valid it is reused — no extra login call is made.</li>
+  <li>On HTTP <code>401</code>, the token is invalidated and one immediate re-login is attempted.</li>
+  <li>HTTP timeout for all calls: <strong>10 seconds</strong>.</li>
+</ul>
+
+<!-- ── B.3 Statuses ── -->
+<h3 id="status-codes">B.3 WFM Status Codes</h3>
+
+<div class="status-grid">
+  <div class="status-card">
+    <span class="status-id">1</span>
+    <div class="status-info">
+      <div class="code">salesNew</div>
+      <div class="label">Шинэ захиалга</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">3</span>
+    <div class="status-info">
+      <div class="code">salesDone</div>
+      <div class="label">Хүргэсэн <span class="badge closed">terminal</span></div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">5</span>
+    <div class="status-info">
+      <div class="code">salesDelivery</div>
+      <div class="label">Хуваарилсан</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">8</span>
+    <div class="status-info">
+      <div class="code">salesDriverDone</div>
+      <div class="label">Жолооч хүлээн авсан</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">12</span>
+    <div class="status-info">
+      <div class="code">deliveryCancel</div>
+      <div class="label">Авахаа больсон <span class="badge closed">terminal</span></div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">13</span>
+    <div class="status-info">
+      <div class="code">deliveryTomorrow</div>
+      <div class="label">Маргааш авна</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">14</span>
+    <div class="status-info">
+      <div class="code">deliveryNophone</div>
+      <div class="label">Утсаа аваагүй</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">15</span>
+    <div class="status-info">
+      <div class="code">deliveryNoCall</div>
+      <div class="label">Дугаар холбогдохгүй</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">16</span>
+    <div class="status-info">
+      <div class="code">deliveryGotoAddress</div>
+      <div class="label">Хаягаар очсон</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">17</span>
+    <div class="status-info">
+      <div class="code">deliveryNextBuy</div>
+      <div class="label">Дараа авна</div>
+    </div>
+  </div>
+  <div class="status-card">
+    <span class="status-id">23</span>
+    <div class="status-info">
+      <div class="code">exchanged</div>
+      <div class="label">Сольж авсан <span class="badge closed">terminal</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="callout note">
+  Statuses <strong>3</strong>, <strong>12</strong>, and <strong>23</strong> are terminal/closed
+  states. The <code>is_closed</code> flag is set to <code>1</code> for these.
+</div>
+
+<!-- ── B.4 Endpoints ── -->
+<h3 id="client-endpoints">B.4 Client Endpoints</h3>
+
+<!-- list sales -->
+<h4>List Driver Sales</h4>
+<p>
+  <span class="badge post">POST</span>
+  &nbsp;<code>/api/sales/integration</code>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Function: <code>get_driver_sales(driver_id, offset, page_size)</code>
+</p>
+
+<table>
+  <thead><tr><th>Parameter</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>driver_id</code></td><td>—</td><td>Driver's numeric ID (as string)</td></tr>
+    <tr><td><code>offset</code></td><td><code>0</code></td><td>Pagination offset</td></tr>
+    <tr><td><code>page_size</code></td><td><code>50</code></td><td>Items per page</td></tr>
+  </tbody>
+</table>
+
+<pre><code>// Request payload
+{
+  "criteria": {
+    "es.driver_id": {
+      "value":    "&lt;driver_id&gt;",
+      "operator": "=",
+      "dataType": "integer"
+    }
+  },
+  "paging": { "offset": 0, "pageSize": 50 }
+}</code></pre>
+
+<p>Returns <code>[]</code> on any error. The response <code>data</code> field may be an array or an
+  object with an <code>items</code>/<code>data</code> key — both shapes are handled.</p>
+
+<!-- sales detail -->
+<h4>Get Sales Detail</h4>
+<p>
+  <span class="badge post">POST</span>
+  &nbsp;<code>/api/sales/get</code>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Function: <code>get_sales_detail(sales_id)</code>
+</p>
+
+<div class="callout warn">
+  The lookup key is <strong><code>sales_id</code></strong> (the numeric <code>id</code> field),
+  <em>not</em> <code>sales_number</code>. Passing <code>sales_number</code> to this endpoint
+  returns no data.
+</div>
+
+<pre><code>// Request payload
+{ "id": "&lt;sales_id&gt;" }
+
+// Response (normalized by structure_sales_detail)
+{
+  ...raw fields...,
+  "status_code":  "salesDelivery",
+  "status_name":  "Хуваарилсан",
+  "is_closed":    0,
+  "order_items": [
+    { "item_id": "123", "name": "Item A", "image_url": "...", "quantity": 1, "price": 5000.0 }
+  ]
+}</code></pre>
+
+<h4>order_items normalization</h4>
+<p>The following raw field aliases are accepted and mapped to the canonical shape:</p>
+<table>
+  <thead><tr><th>Canonical Field</th><th>Accepted Raw Keys (first match wins)</th></tr></thead>
+  <tbody>
+    <tr><td><code>item_id</code></td><td><code>sales_detail_id</code>, <code>item_id</code></td></tr>
+    <tr><td><code>name</code></td><td><code>item_name</code>, <code>main_item_name</code>, <code>name</code></td></tr>
+    <tr><td><code>image_url</code></td><td><code>default_image</code>, <code>image_url</code></td></tr>
+    <tr><td><code>quantity</code></td><td><code>sales_qty</code>, <code>quantity</code></td></tr>
+    <tr><td><code>price</code></td><td><code>unit_price</code>, <code>line_total_amount</code>, <code>line_total_price</code>, <code>price</code></td></tr>
+  </tbody>
+</table>
+
+<!-- change status -->
+<h4>Change Sales Status</h4>
+<p>
+  <span class="badge post">POST</span>
+  &nbsp;<code>/api/sales/changestatus</code>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  Function: <code>change_sales_status(sales_id, status_id, driver_token?)</code>
+</p>
+
+<pre><code>// Request payload
+{ "id": "&lt;sales_id&gt;", "statusId": &lt;status_id&gt; }</code></pre>
+
+<table>
+  <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>sales_id</code></td><td>The <code>id</code> field of the sales order</td></tr>
+    <tr><td><code>status_id</code></td><td>Target WFM status ID (see Section B.3)</td></tr>
+    <tr><td><code>driver_token</code></td><td>Optional — if provided, uses the driver's own Deligo JWT instead of the service-account token</td></tr>
+  </tbody>
+</table>
+
+<p>Returns <code>True</code> on HTTP 200, <code>False</code> otherwise. When called with a
+  <code>driver_token</code>, a retry with the service-account token is <em>not</em> performed on
+  failure.</p>
+
+<hr />
+
+<!-- ══════════════════════════════════════════════════════════════
+     5. SECURITY
+══════════════════════════════════════════════════════════════ -->
+<h2 id="security">5. Security Notes</h2>
+
+<ul>
+  <li>Credentials (<code>DELIGO_API_EMAIL</code>, <code>DELIGO_API_PASSWORD</code>) must be stored
+    as environment variables or secrets — never hardcoded or committed to source control.</li>
+  <li><code>ORDER_SERVICE_URL</code> should point to an internal network endpoint where possible to
+    avoid exposing order data over the public internet.</li>
+  <li>If an API key or token is required for Deligo Mapper to call your order service, use a
+    fixed header (e.g. <code>x-api-key</code>) configured via environment variable.</li>
+  <li>HTTP timeout on all outbound calls is capped at <strong>10 seconds</strong> to prevent
+    cascading latency.</li>
+  <li>Driver tokens forwarded to <code>/api/sales/changestatus</code> are not stored and are only
+    used for the duration of the single request.</li>
+</ul>
+
+<hr />
+
+<!-- ══════════════════════════════════════════════════════════════
+     6. CONTACT
+══════════════════════════════════════════════════════════════ -->
+<h2 id="contact">6. Contact &amp; Next Steps</h2>
+
+<p>Coordinate with the Deligo team on the following open items:</p>
+
+<ol>
+  <li><strong>Auth strategy</strong> — API key, JWT, or internal-network-only for the order service
+    callback endpoints.</li>
+  <li><strong>Batch endpoint feasibility</strong> — whether <code>POST /api/orders/batch</code>
+    can be implemented or if individual calls are preferred.</li>
+  <li><strong>Pagination</strong> — handling large order counts in the batch endpoint.</li>
+  <li><strong>Env-var handoff</strong> — sharing <code>DELIGO_API_EMAIL</code> /
+    <code>DELIGO_API_PASSWORD</code> service-account credentials securely.</li>
+</ol>
+
+<hr />
+<p style="font-size:11px; color:#9ca3af; text-align:center; margin-top:40px;">
+  Deligo Mapper · Integration Documentation v1.0 · Confidential
+</p>
+
+</body>
+</html>

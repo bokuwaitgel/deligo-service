@@ -13,13 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 def _build_tracking_url(sales_number: str) -> Optional[str]:
-    prefix = os.getenv("TRACKING_URL_PREFIX")
-    return f"{prefix}{sales_number}" if prefix else None
-
+    return f"/track/{sales_number}"
 
 def _geocode(address: str, is_countryside: bool = False) -> Optional[dict]:
     try:
-        full_address = address if is_countryside else f"{address}, Mongolia, Ulaanbaatar"
+        full_address = address if is_countryside else f"монгол улс, улаанбаатар хот, {address}"
+        print(f"Geocoding address: {full_address}")
         loc: Location = geocode_address(full_address)
         return loc.model_dump(mode="json")
     except Exception:
@@ -36,11 +35,19 @@ def create_delivery(repo: DeliveryRepository, payload: DeliveryOrderCreate) -> D
         sales_number=payload.sales_number,
         sales_id=payload.sales_id,
         store_id=payload.store_id,
+        company_id=payload.company_id,
         customer_address=payload.customer_address,
         customer_location=_geocode(payload.customer_address, payload.is_countryside),
         tracking_url=_build_tracking_url(payload.sales_number),
         map_status=MapStatus.PENDING,
     )
+
+    #before creating, check if sales_number already exists to avoid duplicates
+    existing = repo.get_by_sales_number(payload.sales_number)
+    if existing:
+        # return existing order if already exists
+        order = repo.get_by_sales_number(payload.sales_number)
+        return DeliveryOrderResponse.model_validate(order)
 
     return DeliveryOrderResponse.model_validate(repo.create(order))
 
