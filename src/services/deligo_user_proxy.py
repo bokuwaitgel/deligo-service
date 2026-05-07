@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -111,24 +112,85 @@ def shop_orders(token: str, company_id: str, offset: int = 0, page_size: int = 5
     return _order_list(token, "es.company_id", company_id, offset, page_size)
 
 
-def change_status(token: str, sales_id: str, status_id: int) -> bool:
-    params = f"?sales_id={sales_id}&status_id={status_id}"
+def sales_detail(token: str, sales_id: str) -> Optional[Dict[str, Any]]:
+    body = _post("/api/sales/get", json={"id": sales_id}, token=token)
+    if isinstance(body, dict):
+        data = body.get("data")
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def change_status(
+    token: str,
+    sales_id: str,
+    status_id: int,
+    status_description: Optional[str] = None,
+) -> bool:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    url = f"{DELIGO_API_URL}/api/sales/changestatus{params}"
-    try:
-        r = httpx.post(
-            url,
-            json={"id": sales_id, "statusId": status_id},
-            headers=headers,
-            timeout=_HTTP_TIMEOUT,
-        )
-    except httpx.HTTPError as exc:
-        raise DeligoApiError(f"Failed to reach deligo: {exc}") from exc
-    if r.status_code == 401:
-        raise DeligoApiError("Deligo token rejected", status_code=401)
-    if r.status_code >= 400:
+    url = f"{DELIGO_API_URL}/api/sales/changestatus"
+    body: Dict[str, Any] = {"id": sales_id, "statusId": status_id}
+    if status_description:
+        body["statusDescription"] = status_description
+
+    max_attempts = 3
+    retryable_statuses = {500, 502, 503, 504}
+    last_transport_exc: Optional[Exception] = None
+    last_response: Optional[httpx.Response] = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = httpx.post(
+                url,
+                json=body,
+                headers=headers,
+                timeout=_HTTP_TIMEOUT,
+            )
+            last_response = r
+        except httpx.HTTPError as exc:
+            last_transport_exc = exc
+            logger.warning(
+                "Deligo changestatus transport error (attempt %s/%s): sales_id=%s status_id=%s",
+                attempt,
+                max_attempts,
+                sales_id,
+                status_id,
+                exc_info=True,
+            )
+            if attempt < max_attempts:
+                time.sleep(0.35 * attempt)
+                continue
+            break
+
+        if r.status_code == 401:
+            raise DeligoApiError("Deligo token rejected", status_code=401)
+
+        if r.status_code < 400:
+            return True
+
+        if r.status_code in retryable_statuses and attempt < max_attempts:
+            logger.warning(
+                "Deligo changestatus retryable response (attempt %s/%s): status=%s sales_id=%s",
+                attempt,
+                max_attempts,
+                r.status_code,
+                sales_id,
+            )
+            time.sleep(0.35 * attempt)
+            continue
+
         raise DeligoApiError(r.text or f"HTTP {r.status_code}", status_code=r.status_code)
-    return True
+
+    if last_transport_exc is not None:
+        raise DeligoApiError(f"Failed to reach deligo after {max_attempts} attempts: {last_transport_exc}") from last_transport_exc
+
+    if last_response is not None:
+        raise DeligoApiError(
+            last_response.text or f"HTTP {last_response.status_code}",
+            status_code=last_response.status_code,
+        )
+
+    raise DeligoApiError("Failed to reach deligo")
 
 
 def pick_driver_id(user: Dict[str, Any]) -> Optional[str]:
