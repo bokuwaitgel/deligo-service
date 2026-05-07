@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 DELIGO_API_URL = os.getenv("DELIGO_API_URL", "https://api.deligo.mn").rstrip("/")
 _HTTP_TIMEOUT_SECONDS = float(os.getenv("DELIGO_HTTP_TIMEOUT", "20"))
 _HTTP_TIMEOUT = httpx.Timeout(_HTTP_TIMEOUT_SECONDS, connect=5.0)
+_MAX_STATUS_DESCRIPTION_PARAM_LEN = int(os.getenv("DELIGO_STATUS_DESC_MAX_LEN", "180000"))
 
 
 class DeligoApiError(Exception):
@@ -126,12 +127,19 @@ def change_status(
     sales_id: str,
     status_id: int,
     status_description: Optional[str] = None,
+    proof: Optional[Dict[str, Any]] = None,
 ) -> bool:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     url = f"{DELIGO_API_URL}/api/sales/changestatus"
-    body: Dict[str, Any] = {"id": sales_id, "statusId": status_id}
+    params: Dict[str, Any] = {"sales_id": sales_id, "status_id": status_id}
     if status_description:
-        body["statusDescription"] = status_description
+        # Forward full description as-is (including image_base64) per driver workflow requirement.
+        params["statusDescription"] = status_description
+
+    if proof:
+        # check proof got image base 64
+        if proof.get("image_base64") or proof.get("imageDataUrl"):
+            params['image'] = proof.get("image_base64") or proof.get("imageDataUrl")
 
     max_attempts = 3
     retryable_statuses = {500, 502, 503, 504}
@@ -142,7 +150,7 @@ def change_status(
         try:
             r = httpx.post(
                 url,
-                json=body,
+                params=params,
                 headers=headers,
                 timeout=_HTTP_TIMEOUT,
             )

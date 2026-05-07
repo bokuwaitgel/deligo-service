@@ -94,27 +94,8 @@ class ChangeStatusRequest(BaseModel):
     sales_id: str
     status_id: int
     status_description: str | None = None
+    image_base64: str | None = None
     proof: Dict[str, Any] | None = None
-
-
-def _build_status_description(payload: ChangeStatusRequest) -> str | None:
-    # Prefer explicit status_description when provided by caller.
-    if payload.status_description and payload.status_description.strip():
-        return payload.status_description.strip()
-
-    if not payload.proof:
-        return None
-
-    note = str(payload.proof.get("note") or "").strip()
-    image_base64 = str(payload.proof.get("imageDataUrl") or payload.proof.get("image_base64") or "").strip()
-
-    if note and image_base64:
-        return f"{note}\nimage_base64:{image_base64}"
-    if note:
-        return note
-    if image_base64:
-        return f"image_base64:{image_base64}"
-    return None
 
 
 def _sort_driver_items(
@@ -370,8 +351,7 @@ def change_status_endpoint(
 ):
     _require_token(token)
     try:
-        status_description = _build_status_description(payload)
-        change_status(token, payload.sales_id, payload.status_id, status_description=status_description)
+        change_status(token, payload.sales_id, payload.status_id, status_description=payload.status_description,  proof=payload.proof)
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
     return {"status": "ok"}
