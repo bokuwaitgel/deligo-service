@@ -68,6 +68,15 @@ def _extract_customer_location(item: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
+def _is_countryside_flag(value: object) -> bool:
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized in {"1", "true"}
+    return False
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -196,8 +205,9 @@ def _enrich_with_detail_and_location(
             )
             location_data = None
             if customer_address and customer_address != "Address not provided":
+                is_countryside = _is_countryside_flag(merged.get("is_country"))
                 print(f"[Geocode] Geocoding {sales_number}: {customer_address}")
-                location_data = _geocode(customer_address)
+                location_data = _geocode(customer_address, is_countryside=is_countryside)
                 if location_data:
                     merged["customer_location"] = location_data
             created = repo.create(DeliveryOrder(
