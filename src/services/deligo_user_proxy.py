@@ -131,7 +131,7 @@ def change_status(
 ) -> bool:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     url = f"{DELIGO_API_URL}/api/sales/changestatus"
-    params: Dict[str, Any] = {"sales_id": sales_id, "status_id": status_id}
+    params: Dict[str, Any] = {"id": sales_id, "statusId": status_id}
     if status_description:
         # Forward full description as-is (including image_base64) per driver workflow requirement.
         params["statusDescription"] = status_description
@@ -140,6 +140,8 @@ def change_status(
         # check proof got image base 64
         if proof.get("image_base64") or proof.get("imageDataUrl"):
             params['image'] = proof.get("image_base64") or proof.get("imageDataUrl")
+
+    print(f"[Deligo] POST /api/sales/changestatus  sales_id={sales_id} status_id={status_id} proof={'yes' if proof else 'no'}")
 
     max_attempts = 3
     retryable_statuses = {500, 502, 503, 504}
@@ -155,6 +157,7 @@ def change_status(
                 timeout=_HTTP_TIMEOUT,
             )
             last_response = r
+            print(f"[Deligo] changestatus response: status={r.status_code} body={r.text[:500]}")
         except httpx.HTTPError as exc:
             last_transport_exc = exc
             logger.warning(

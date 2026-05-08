@@ -22,6 +22,13 @@ class DeliveryRepository:
             .first()
         )
 
+    def get_by_sales_id(self, sales_id: str) -> Optional[DeliveryOrder]:
+        return (
+            self.db_session.query(DeliveryOrder)
+            .filter(DeliveryOrder.sales_id == sales_id)
+            .first()
+        )
+
     def create(self, order: DeliveryOrder) -> DeliveryOrder:
         self.db_session.add(order)
         self.db_session.commit()

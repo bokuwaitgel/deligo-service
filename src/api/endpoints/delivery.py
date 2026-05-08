@@ -159,6 +159,29 @@ async def get_delivery_order(
     except Exception as e:
         logger.error(f"Error fetching delivery order: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch delivery order")
+
+
+@router.get("/sales-id/{sales_id}", response_model=DeliveryOrderResponse)
+async def get_delivery_order_by_sales_id(
+    sales_id: str,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+    api_key: str = Depends(require_api_key),
+):
+    """Get a delivery order by sales_id, enriched with deligo sales detail."""
+    try:
+        delivery_order = repo.get_by_sales_id(sales_id)
+        if not delivery_order:
+            raise HTTPException(status_code=404, detail="Delivery order not found")
+        if delivery_order.sales_id:
+            detail = get_sales_detail(delivery_order.sales_id)
+            if detail:
+                delivery_order.detail = detail
+        return delivery_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching delivery order by sales_id: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch delivery order")
     
 @router.patch("/{sales_number}/location", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 async def update_delivery_location(
