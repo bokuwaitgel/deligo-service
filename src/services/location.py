@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from typing import Any, cast
 
 import googlemaps
 from dotenv import load_dotenv
@@ -144,16 +145,16 @@ def parse_frontend_location(data: dict) -> Location:
 
 def reverse_geocode(lat: float, lng: float) -> Location:
     """Reverse geocode coordinates using Google Maps API."""
-    client = _get_client() # type: ignore
+    client = cast(Any, _get_client())
     # First try: specific types for detailed address
     results = client.reverse_geocode(
         (lat, lng),
         language="mn",
         result_type=["street_address", "premise", "sublocality", "neighborhood"],
-    ) # type: ignore
+    )
     if not results:
         # Fallback: all types
-        results = client.reverse_geocode((lat, lng), language="mn") # type: ignore
+        results = client.reverse_geocode((lat, lng), language="mn")
 
     if not results:
         return Location(

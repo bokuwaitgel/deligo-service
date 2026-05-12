@@ -7,7 +7,7 @@ from typing import Optional
 from schemas.database.delivery_db import DeliveryOrder
 from schemas.delivery import DeliveryOrderCreate, DeliveryOrderResponse, Location, MapStatus
 from src.repositories.delivery import DeliveryRepository
-from src.services.location import geocode_address
+from src.services.location import geocode_address, reverse_geocode
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +26,55 @@ def _geocode(address: str, is_countryside: bool = False) -> Optional[dict]:
         return None
 
 
+def _reverse_geocode(latitude: float, longitude: float, fallback_address: str | None = None) -> Optional[dict]:
+    try:
+        loc: Location = reverse_geocode(latitude, longitude)
+        payload = loc.model_dump(mode="json")
+        if fallback_address and not payload.get("formatted_address"):
+            payload["formatted_address"] = fallback_address
+        return payload
+    except Exception:
+        logger.warning(
+            "Reverse geocoding failed for coordinates: (%s, %s)",
+            latitude,
+            longitude,
+            exc_info=True,
+        )
+        return {
+            "latitude": latitude,
+            "longitude": longitude,
+            "formatted_address": fallback_address,
+            "street_address": None,
+            "city": None,
+            "state": None,
+            "district": None,
+            "khoroo": None,
+            "country": None,
+            "postal_code": None,
+            "building": None,
+        }
+
+
 def create_delivery(repo: DeliveryRepository, payload: DeliveryOrderCreate) -> DeliveryOrderResponse:
     """
         Create a new delivery order. Geocodes the address immediately, 
         but allows null location if geocoding fails.
     """
+    explicit_location = None
+    if payload.latitude is not None and payload.longitude is not None:
+        explicit_location = _reverse_geocode(
+            payload.latitude,
+            payload.longitude,
+            fallback_address=payload.customer_address,
+        )
+
     order = DeliveryOrder(
         sales_number=payload.sales_number,
         sales_id=payload.sales_id,
         store_id=payload.store_id,
         company_id=payload.company_id,
         customer_address=payload.customer_address,
-        customer_location=_geocode(payload.customer_address, payload.is_countryside),
+        customer_location=explicit_location or _geocode(payload.customer_address, payload.is_countryside),
         tracking_url=_build_tracking_url(payload.sales_number),
         map_status=MapStatus.PENDING,
     )

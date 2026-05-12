@@ -50,6 +50,8 @@ class DeliveryOrderCreate(BaseModel):
     store_id: str = Field(..., description="Store/shop ID")
     company_id: Optional[str] = Field(None, description="Company ID (preferred shop scope; overrides store_id when provided)")
     customer_address: str = Field(..., description="Raw address string to geocode")
+    latitude: Optional[float] = Field(None, description="Optional explicit customer latitude")
+    longitude: Optional[float] = Field(None, description="Optional explicit customer longitude")
     is_countryside: bool = Field(False, description="Skip Mongolia/UB suffix in geocoding")
 
 
