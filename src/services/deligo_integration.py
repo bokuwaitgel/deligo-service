@@ -69,11 +69,15 @@ class _TokenCache:
 
 
 _cache = _TokenCache()
+_missing_service_credentials_logged = False
 
 
 def _login() -> Optional[str]:
+    global _missing_service_credentials_logged
     if not DELIGO_API_EMAIL or not DELIGO_API_PASSWORD:
-        logger.warning("DELIGO_API_EMAIL / DELIGO_API_PASSWORD not set — skipping deligo integration")
+        if not _missing_service_credentials_logged:
+            logger.info("DELIGO_API_EMAIL / DELIGO_API_PASSWORD not set; service-account Deligo integration is disabled")
+            _missing_service_credentials_logged = True
         return None
     try:
         r = httpx.post(
