@@ -342,8 +342,11 @@ async def track_delivery_order(
         detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True) if delivery_order.sales_id else None
         if detail:
             delivery_order.detail = detail
-            driver_id = detail.get("driver_id")
-            if driver_id is not None:
+
+        # Deligo /sales/get can sometimes omit driver_id; use local fallback so
+        # tracking counters don't stay null.
+        driver_id = _as_str((detail or {}).get("driver_id")) or _as_str(getattr(delivery_order, "driver_id", None))
+        if driver_id is not None:
                 driver_sales = get_driver_sales(str(driver_id), page_size=200, use_service_auth=True)
                 logger.info(f"[Track] Driver {driver_id} total sales: {len(driver_sales)}")
                 
@@ -380,8 +383,8 @@ async def track_delivery_order(
                 delivery_order.active_deliveries_count = len(queue_sales)
                 logger.info(f"[Track] Setting active_deliveries_count: {delivery_order.active_deliveries_count}")
 
-                my_sales_number = _as_str(detail.get("sales_number")) or _as_str(delivery_order.sales_number)
-                my_sales_id = _as_str(detail.get("sales_id")) or _as_str(delivery_order.sales_id)
+                my_sales_number = _as_str((detail or {}).get("sales_number")) or _as_str(delivery_order.sales_number)
+                my_sales_id = _as_str((detail or {}).get("sales_id")) or _as_str(delivery_order.sales_id)
 
                 my_index: Optional[int] = None
                 current_driver_index: Optional[int] = None
