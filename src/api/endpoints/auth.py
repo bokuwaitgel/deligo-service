@@ -162,7 +162,7 @@ def _enrich_with_detail_and_location(
         merged = {**item}
         sales_id = _as_str(merged.get("sales_id"))
         if sales_id:
-            detail = sales_detail(token, sales_id)
+            detail = sales_detail(sales_id)
             if detail:
                 merged = {**merged, **detail}
 

@@ -113,15 +113,9 @@ def shop_orders(token: str, company_id: str, offset: int = 0, page_size: int = 5
     return _order_list(token, "es.company_id", company_id, offset, page_size)
 
 
-def sales_detail(token: Optional[str], sales_id: str) -> Optional[Dict[str, Any]]:
-    # Deligo sales/get can be public in some environments, so try without auth first.
-    try:
-        body = _post("/api/sales/get", json={"id": sales_id}, token=None)
-    except DeligoApiError as exc:
-        if exc.status_code != 401 or not token:
-            raise
-        # Fallback for environments where sales/get still requires auth.
-        body = _post("/api/sales/get", json={"id": sales_id}, token=token)
+def sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
+    # sales/get is intentionally called without Authorization header.
+    body = _post("/api/sales/get", json={"id": sales_id}, token=None)
 
     if isinstance(body, dict):
         data = body.get("data")
