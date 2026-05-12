@@ -131,15 +131,15 @@ def change_status(
 ) -> bool:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     url = f"{DELIGO_API_URL}/api/sales/changestatus"
-    params: Dict[str, Any] = {"id": sales_id, "statusId": status_id}
+    payload: Dict[str, Any] = {"id": sales_id, "statusId": status_id}
     if status_description:
         # Forward full description as-is (including image_base64) per driver workflow requirement.
-        params["statusDescription"] = status_description
+        payload["statusDescription"] = status_description
 
     if proof:
         # check proof got image base 64
         if proof.get("image_base64") or proof.get("imageDataUrl"):
-            params['image'] = proof.get("image_base64") or proof.get("imageDataUrl")
+            payload["image"] = proof.get("image_base64") or proof.get("imageDataUrl")
 
     print(f"[Deligo] POST /api/sales/changestatus  sales_id={sales_id} status_id={status_id} proof={'yes' if proof else 'no'}")
 
@@ -152,7 +152,7 @@ def change_status(
         try:
             r = httpx.post(
                 url,
-                params=params,
+                json=payload,
                 headers=headers,
                 timeout=_HTTP_TIMEOUT,
             )
