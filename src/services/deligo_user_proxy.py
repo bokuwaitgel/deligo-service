@@ -128,7 +128,7 @@ def change_status(
     status_id: int,
     status_description: Optional[str] = None,
     proof: Optional[Dict[str, Any]] = None,
-) -> bool:
+) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     url = f"{DELIGO_API_URL}/api/sales/changestatus"
     payload: Dict[str, Any] = {"id": sales_id, "statusId": status_id}
@@ -177,7 +177,39 @@ def change_status(
             raise DeligoApiError("Deligo token rejected", status_code=401)
 
         if r.status_code < 400:
-            return True
+            warning_message: Optional[str] = None
+            try:
+                body = r.json()
+                if isinstance(body, dict):
+                    status_raw = body.get("status")
+                    message_raw = body.get("message")
+                    warning_raw = body.get("warning")
+
+                    if (
+                        isinstance(status_raw, str)
+                        and status_raw.strip().lower() == "warning"
+                        and isinstance(message_raw, str)
+                        and message_raw.strip()
+                    ):
+                        warning_message = message_raw.strip()
+                    elif isinstance(message_raw, str) and message_raw.strip() and not warning_raw:
+                        # Some Deligo responses send a warning-like message field without warning key.
+                        warning_message = message_raw.strip()
+
+                    if isinstance(warning_raw, str) and warning_raw.strip():
+                        warning_message = warning_raw.strip()
+                    else:
+                        warnings_raw = body.get("warnings")
+                        if isinstance(warnings_raw, list):
+                            warnings = [str(item).strip() for item in warnings_raw if str(item).strip()]
+                            if warnings:
+                                warning_message = "; ".join(warnings)
+                        elif isinstance(warnings_raw, str) and warnings_raw.strip():
+                            warning_message = warnings_raw.strip()
+            except ValueError:
+                warning_message = None
+
+            return {"ok": True, "warning": warning_message}
 
         if r.status_code in retryable_statuses and attempt < max_attempts:
             logger.warning(

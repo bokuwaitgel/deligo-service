@@ -361,7 +361,18 @@ def change_status_endpoint(
 ):
     _require_token(token)
     try:
-        change_status(token, payload.sales_id, payload.status_id, status_description=payload.status_description,  proof=payload.proof)
+        result = change_status(
+            token,
+            payload.sales_id,
+            payload.status_id,
+            status_description=payload.status_description,
+            proof=payload.proof,
+        )
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
-    return {"status": "ok"}
+
+    warning = result.get("warning") if isinstance(result, dict) else None
+    response: Dict[str, Any] = {"status": "ok"}
+    if isinstance(warning, str) and warning.strip():
+        response["warning"] = warning.strip()
+    return response
