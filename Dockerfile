@@ -21,6 +21,7 @@ WORKDIR /app
 
 # Runtime libpq (needed by psycopg2-binary at import time)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     libpq5 \
  && rm -rf /var/lib/apt/lists/*
 
