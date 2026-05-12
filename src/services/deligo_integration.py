@@ -155,6 +155,24 @@ def get_driver_sales(
         "paging": {"offset": offset, "pageSize": page_size},
     }
     r = _post_with_retry("/api/sales/integration", payload, use_service_auth=use_service_auth)
+
+    # Keep behavior consistent with get_sales_detail: if service auth is
+    # unavailable or rejected, retry once without auth for compatibility.
+    if r is None and use_service_auth:
+        logger.warning(
+            "Deligo sales/integration with service auth returned no response; retrying unauthenticated for driver %s",
+            driver_id,
+        )
+        r = _post_with_retry("/api/sales/integration", payload, use_service_auth=False)
+
+    if r is not None and r.status_code in (401, 403) and use_service_auth:
+        logger.warning(
+            "Deligo sales/integration with service auth returned %s; retrying unauthenticated for driver %s",
+            r.status_code,
+            driver_id,
+        )
+        r = _post_with_retry("/api/sales/integration", payload, use_service_auth=False)
+
     if r is None or r.status_code != 200:
         if r is not None:
             logger.warning("Deligo sales list returned %s for driver %s", r.status_code, driver_id)
