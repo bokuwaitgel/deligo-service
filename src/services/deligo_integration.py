@@ -222,6 +222,22 @@ def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Option
         return None
     print(f"[Deligo] POST /api/sales/get  id={sales_id}")
     r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=use_service_auth)
+
+    # In some deployments service auth may be temporarily unavailable (missing env,
+    # expired token, or upstream auth policy changes). Fall back to unauthenticated
+    # request once to preserve backwards compatibility where Deligo still allows it.
+    if r is None and use_service_auth:
+        logger.warning("Deligo sales/get with service auth returned no response; retrying unauthenticated for id=%s", sales_id)
+        r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=False)
+
+    if r is not None and r.status_code in (401, 403) and use_service_auth:
+        logger.warning(
+            "Deligo sales/get with service auth returned %s; retrying unauthenticated for id=%s",
+            r.status_code,
+            sales_id,
+        )
+        r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=False)
+
     if r is None:
         print(f"[Deligo] sales/get failed for id={sales_id}: no response")
         return None
