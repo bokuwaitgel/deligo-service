@@ -1,6 +1,9 @@
 """Deligo external API client (api.deligo.mn).
 
-Handles login, token caching, and the two calls we actually need:
+Uses frontend-provided driver token when available, otherwise calls unauthenticated
+for endpoints that allow it.
+
+The two calls we actually need:
 
 - POST /api/sales/integration  — list sales for a driver (by driver_id)
 - POST /api/sales/get          — fetch full detail for one sales_number
@@ -10,14 +13,11 @@ store driver_id/driver_name locally.
 
 Configure via env:
     DELIGO_API_URL       (default https://api.deligo.mn)
-    DELIGO_API_EMAIL
-    DELIGO_API_PASSWORD
 """
 from __future__ import annotations
 
 import logging
 import os
-import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -25,9 +25,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DELIGO_API_URL = os.getenv("DELIGO_API_URL", "https://api.deligo.mn").rstrip("/")
-DELIGO_API_EMAIL = os.getenv("DELIGO_API_EMAIL", "")
-DELIGO_API_PASSWORD = os.getenv("DELIGO_API_PASSWORD", "")
-
 _HTTP_TIMEOUT = 10.0
 
 # wfm_status_id -> machine code / human label, from the status spreadsheet.
@@ -61,70 +58,10 @@ STATUS_LABEL_MAP: Dict[int, str] = {
 
 # Statuses that represent a terminal / closed state.
 _CLOSED_STATUS_IDS = {3, 12, 23}
-
-
-class _TokenCache:
-    token: Optional[str] = None
-    expires_at: float = 0.0
-
-
-_cache = _TokenCache()
-_missing_service_credentials_logged = False
-
-
-def _login() -> Optional[str]:
-    global _missing_service_credentials_logged
-    if not DELIGO_API_EMAIL or not DELIGO_API_PASSWORD:
-        if not _missing_service_credentials_logged:
-            logger.info("DELIGO_API_EMAIL / DELIGO_API_PASSWORD not set; service-account Deligo integration is disabled")
-            _missing_service_credentials_logged = True
-        return None
-    try:
-        r = httpx.post(
-            f"{DELIGO_API_URL}/api/user/login",
-            json={"email": DELIGO_API_EMAIL, "password": DELIGO_API_PASSWORD},
-            timeout=_HTTP_TIMEOUT,
-        )
-        r.raise_for_status()
-        body = r.json()
-        token = body.get("access_token")
-        expires_in = int(body.get("expires_in") or 0)
-        if token:
-            _cache.token = token
-            # Renew slightly before the token actually expires.
-            _cache.expires_at = time.time() + max(expires_in - 60, 60)
-        return token
-    except Exception:
-        logger.warning("Deligo login request failed", exc_info=True)
-        return None
-
-
-def _token() -> Optional[str]:
-    if _cache.token and time.time() < _cache.expires_at:
-        return _cache.token
-    return _login()
-
-
-def _auth_headers() -> Optional[Dict[str, str]]:
-    tok = _token()
-    return {"Authorization": f"Bearer {tok}"} if tok else None
-
-
 def _post_with_retry(path: str, payload: Dict[str, Any]) -> Optional[httpx.Response]:
-    headers = _auth_headers()
-    if headers is None:
-        return None
     url = f"{DELIGO_API_URL}{path}"
     try:
-        r = httpx.post(url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT)
-        if r.status_code == 401:
-            # Token rejected — force refresh and retry once.
-            _cache.token = None
-            headers = _auth_headers()
-            if headers is None:
-                return None
-            r = httpx.post(url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT)
-        return r
+        return httpx.post(url, json=payload, timeout=_HTTP_TIMEOUT)
     except Exception:
         logger.warning("Deligo request failed: %s", path, exc_info=True)
         return None
@@ -162,13 +99,13 @@ def change_sales_status(sales_id: str, status_id: int, driver_token: Optional[st
     """Change a sales order's wfm status via POST /api/sales/changestatus.
 
     If `driver_token` is provided the call is made with the driver's own Deligo
-    JWT (matching the Postman «change_status /Driver/» request).  Falls back to
-    the service-account token when not supplied.
+    JWT (matching the Postman «change_status /Driver/» request). When not supplied,
+    the request is sent without Authorization header.
 
     Returns True on HTTP 200, False otherwise.
     """
     status_label = STATUS_LABEL_MAP.get(status_id, str(status_id))
-    token_source = "driver" if driver_token else "service-account"
+    token_source = "driver" if driver_token else "unauthenticated"
     print(f"[Deligo] POST /api/sales/changestatus  sales_id={sales_id}  statusId={status_id} ({status_label})  token={token_source}")
 
     if driver_token:

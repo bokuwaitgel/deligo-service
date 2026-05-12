@@ -231,7 +231,7 @@ async def start_delivery_order(
     Looks up the local delivery row to resolve `sales_id`, then calls the deligo
     changestatus API using the driver's own Deligo JWT when supplied via the
     X-Driver-Token header (matching the Postman «change_status /Driver/» request),
-    falling back to the service-account token otherwise.
+    otherwise calling deligo without Authorization header.
     """
     delivery = repo.get_by_sales_number(sales_number)
     if not delivery:
