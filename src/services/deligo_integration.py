@@ -222,10 +222,23 @@ def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Option
         return None
     print(f"[Deligo] POST /api/sales/get  id={sales_id}")
     r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=use_service_auth)
-    if r is None or r.status_code != 200:
-        if r is not None and r.status_code not in (401, 404):
-            logger.warning("Deligo sales detail returned %s for id=%s", r.status_code, sales_id)
-        print(f"[Deligo] sales/get failed for id={sales_id}: {r.status_code if r else 'None'}")
+    if r is None:
+        print(f"[Deligo] sales/get failed for id={sales_id}: no response")
+        return None
+
+    if r.status_code != 200:
+        response_preview = (r.text or "")[:400]
+        if r.status_code not in (401, 404):
+            logger.warning(
+                "Deligo sales detail returned %s for id=%s: %s",
+                r.status_code,
+                sales_id,
+                response_preview,
+            )
+        print(
+            f"[Deligo] sales/get failed for id={sales_id}: HTTP {r.status_code}"
+            + (f" body={response_preview}" if response_preview else "")
+        )
         return None
     body = r.json()
     data = body.get("data")

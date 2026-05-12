@@ -176,7 +176,7 @@ async def get_delivery_order(
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
         if delivery_order.sales_id:
-            detail = get_sales_detail(delivery_order.sales_id)
+            detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True)
             if detail:
                 delivery_order.detail = detail
         return delivery_order
@@ -199,7 +199,7 @@ async def get_delivery_order_by_sales_id(
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
         if delivery_order.sales_id:
-            detail = get_sales_detail(delivery_order.sales_id)
+            detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True)
             if detail:
                 delivery_order.detail = detail
         return delivery_order

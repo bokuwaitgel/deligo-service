@@ -14,6 +14,15 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Deligo currently provisions newer Google APIs in some environments.
+# Keep legacy Places Find Place opt-in to avoid REQUEST_DENIED when legacy is disabled.
+_ENABLE_LEGACY_FIND_PLACE = os.getenv("ENABLE_LEGACY_FIND_PLACE", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 _gmaps: googlemaps.Client | None = None
 
 
@@ -241,8 +250,8 @@ def geocode_address(address: str) -> Location:
     """Geocode an address string using Google Maps API, restricted to Mongolia.
 
     Strategy:
-    1. Find Place (Places API) – best for named buildings / complex addresses
-    2. Geocoding API with UB hint – fallback for structured addresses
+    1. (Optional) Find Place (Places Legacy API) – best for named buildings
+    2. Geocoding API with UB hint – primary and fallback for structured addresses
     """
     client = _get_client()
     lower = address.lower()
@@ -263,25 +272,26 @@ def geocode_address(address: str) -> Location:
     else:
         query = f"{address}, Улаанбаатар, Монгол"
 
-    # --- Step 1: Find Place (handles named buildings best) ---
-    try:
-        fp_result = client.find_place(  # type: ignore
-            input=query,
-            input_type="textquery",
-            fields=["geometry", "formatted_address", "place_id"],
-            language="mn",
-            location_bias=f"rectangle:{_MN_BOUNDS['southwest']['lat']},{_MN_BOUNDS['southwest']['lng']}|{_MN_BOUNDS['northeast']['lat']},{_MN_BOUNDS['northeast']['lng']}",
-        )
-        candidates = fp_result.get("candidates", [])
-        mn_candidates = [c for c in candidates if _is_in_mongolia(c) or (
-            _MN_BOUNDS["southwest"]["lat"] <= c.get("geometry", {}).get("location", {}).get("lat", 0) <= _MN_BOUNDS["northeast"]["lat"]
-        )]
-        if mn_candidates:
-            loc = _location_from_find_place(mn_candidates[0], address)
-            if loc:
-                return loc
-    except Exception as e:
-        logger.warning("find_place failed for %r: %s", address, e)
+    # --- Step 1: Optional Find Place (legacy Places API) ---
+    if _ENABLE_LEGACY_FIND_PLACE:
+        try:
+            fp_result = client.find_place(  # type: ignore
+                input=query,
+                input_type="textquery",
+                fields=["geometry", "formatted_address", "place_id"],
+                language="mn",
+                location_bias=f"rectangle:{_MN_BOUNDS['southwest']['lat']},{_MN_BOUNDS['southwest']['lng']}|{_MN_BOUNDS['northeast']['lat']},{_MN_BOUNDS['northeast']['lng']}",
+            )
+            candidates = fp_result.get("candidates", [])
+            mn_candidates = [c for c in candidates if _is_in_mongolia(c) or (
+                _MN_BOUNDS["southwest"]["lat"] <= c.get("geometry", {}).get("location", {}).get("lat", 0) <= _MN_BOUNDS["northeast"]["lat"]
+            )]
+            if mn_candidates:
+                loc = _location_from_find_place(mn_candidates[0], address)
+                if loc:
+                    return loc
+        except Exception as e:
+            logger.warning("find_place failed for %r: %s", address, e)
 
     # --- Step 2: Geocoding API ---
     results = client.geocode(  # type: ignore
