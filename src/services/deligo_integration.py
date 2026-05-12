@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -25,6 +26,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 DELIGO_API_URL = os.getenv("DELIGO_API_URL", "https://api.deligo.mn").rstrip("/")
+DELIGO_API_EMAIL = os.getenv("DELIGO_API_EMAIL", "")
+DELIGO_API_PASSWORD = os.getenv("DELIGO_API_PASSWORD", "")
 _HTTP_TIMEOUT = 10.0
 
 # wfm_status_id -> machine code / human label, from the status spreadsheet.
@@ -58,17 +61,87 @@ STATUS_LABEL_MAP: Dict[int, str] = {
 
 # Statuses that represent a terminal / closed state.
 _CLOSED_STATUS_IDS = {3, 12, 23}
-def _post_with_retry(path: str, payload: Dict[str, Any]) -> Optional[httpx.Response]:
-    url = f"{DELIGO_API_URL}{path}"
+
+
+class _TokenCache:
+    token: Optional[str] = None
+    expires_at: float = 0.0
+
+
+_service_token_cache = _TokenCache()
+_missing_service_credentials_logged = False
+
+
+def _service_login() -> Optional[str]:
+    global _missing_service_credentials_logged
+    if not DELIGO_API_EMAIL or not DELIGO_API_PASSWORD:
+        if not _missing_service_credentials_logged:
+            logger.info("DELIGO_API_EMAIL / DELIGO_API_PASSWORD not set; tracking fallback auth is disabled")
+            _missing_service_credentials_logged = True
+        return None
+
     try:
-        return httpx.post(url, json=payload, timeout=_HTTP_TIMEOUT)
+        r = httpx.post(
+            f"{DELIGO_API_URL}/api/user/login",
+            json={"email": DELIGO_API_EMAIL, "password": DELIGO_API_PASSWORD},
+            timeout=_HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        body = r.json()
+        token = body.get("access_token")
+        expires_in = int(body.get("expires_in") or 0)
+        if token:
+            _service_token_cache.token = token
+            _service_token_cache.expires_at = time.time() + max(expires_in - 60, 60)
+        return token
+    except Exception:
+        logger.warning("Deligo service login request failed", exc_info=True)
+        return None
+
+
+def _service_token() -> Optional[str]:
+    if _service_token_cache.token and time.time() < _service_token_cache.expires_at:
+        return _service_token_cache.token
+    return _service_login()
+
+
+def _post_with_retry(
+    path: str,
+    payload: Dict[str, Any],
+    *,
+    use_service_auth: bool = False,
+) -> Optional[httpx.Response]:
+    url = f"{DELIGO_API_URL}{path}"
+
+    headers: Optional[Dict[str, str]] = None
+    if use_service_auth:
+        tok = _service_token()
+        if not tok:
+            return None
+        headers = {"Authorization": f"Bearer {tok}"}
+
+    try:
+        r = httpx.post(url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT)
+
+        if use_service_auth and r.status_code == 401:
+            _service_token_cache.token = None
+            tok = _service_token()
+            if not tok:
+                return None
+            headers = {"Authorization": f"Bearer {tok}"}
+            r = httpx.post(url, json=payload, headers=headers, timeout=_HTTP_TIMEOUT)
+
+        return r
     except Exception:
         logger.warning("Deligo request failed: %s", path, exc_info=True)
         return None
 
 
 def get_driver_sales(
-    driver_id: str, offset: int = 0, page_size: int = 50
+    driver_id: str,
+    offset: int = 0,
+    page_size: int = 50,
+    use_service_auth: bool = False,
 ) -> List[Dict[str, Any]]:
     """List sales assigned to a driver via POST /api/sales/integration."""
     payload = {
@@ -81,7 +154,7 @@ def get_driver_sales(
         },
         "paging": {"offset": offset, "pageSize": page_size},
     }
-    r = _post_with_retry("/api/sales/integration", payload)
+    r = _post_with_retry("/api/sales/integration", payload, use_service_auth=use_service_auth)
     if r is None or r.status_code != 200:
         if r is not None:
             logger.warning("Deligo sales list returned %s for driver %s", r.status_code, driver_id)
@@ -139,7 +212,7 @@ def change_sales_status(sales_id: str, status_id: int, driver_token: Optional[st
     return True
 
 
-def get_sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
+def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Optional[Dict[str, Any]]:
     """Fetch structured sales detail via POST /api/sales/get.
 
     The deligo API keys this lookup by sales_id (the `id` field), not by
@@ -148,7 +221,7 @@ def get_sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
     if not sales_id:
         return None
     print(f"[Deligo] POST /api/sales/get  id={sales_id}")
-    r = _post_with_retry("/api/sales/get", {"id": sales_id})
+    r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=use_service_auth)
     if r is None or r.status_code != 200:
         if r is not None and r.status_code not in (401, 404):
             logger.warning("Deligo sales detail returned %s for id=%s", r.status_code, sales_id)

@@ -76,5 +76,8 @@ class DeliveryOrderResponse(BaseModel):
     detail: Optional[dict] = None  # Merged order detail from deligo integration
     tracking_url: Optional[str] = None
     active_deliveries_count: Optional[int] = None
+    deliveries_before_mine: Optional[int] = None
+    driver_current_order_index: Optional[int] = None
+    eta_minutes: Optional[int] = None
     created_at: datetime
     updated_at: datetime

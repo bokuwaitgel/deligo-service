@@ -70,6 +70,32 @@ def _extract_customer_location(detail: dict) -> Optional[dict]:
     }
 
 
+def _as_int(value: object) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_open_queue_status(detail: dict) -> bool:
+    status_id = _as_int(detail.get("wfm_status_id"))
+    if status_id is not None:
+        return status_id in (5, 8)
+
+    status_code = _as_str(detail.get("status_code"))
+    return status_code in ("salesDelivery", "salesDriverDone")
+
+
+def _route_position(detail: dict) -> Optional[int]:
+    return (
+        _as_int(detail.get("route_number"))
+        or _as_int(detail.get("route_no"))
+        or _as_int(detail.get("sort_order"))
+    )
+
+
 def _upsert_local_delivery_from_detail(repo: DeliveryRepository, detail: dict) -> Optional[DeliveryOrder]:
     sales_number = _as_str(detail.get("sales_number"))
     if not sales_number:
@@ -282,7 +308,23 @@ async def set_delivery_map_status(
     except Exception as e:
         logger.error(f"Error updating map status: {e}")
         raise HTTPException(status_code=500, detail="Failed to update map status")
-    
+
+
+@router.patch("/{sales_number}/eta", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+async def update_delivery_eta(
+    sales_number: str,
+    payload: dict,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Driver view calls this to persist the calculated ETA (in minutes) for a delivery."""
+    eta = payload.get("eta_minutes")
+    if eta is None or not isinstance(eta, (int, float)) or eta < 0:
+        raise HTTPException(status_code=400, detail="eta_minutes must be a non-negative number")
+    updated = repo.update_partial(sales_number, {"eta_minutes": int(eta)})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    return updated
+
 # ---------------------------------------------------------------------------
 # User View Endpoints 
 # ---------------------------------------------------------------------------
@@ -297,18 +339,76 @@ async def track_delivery_order(
         delivery_order = get_delivery(repo, sales_number)
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
-        detail = get_sales_detail(delivery_order.sales_id) if delivery_order.sales_id else None
+        detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True) if delivery_order.sales_id else None
         if detail:
             delivery_order.detail = detail
             driver_id = detail.get("driver_id")
             if driver_id is not None:
-                driver_sales = get_driver_sales(str(driver_id), page_size=200)
-                active = [
-                    s for s in driver_sales
-                    if s.get("sales_number") != sales_number
-                    and s.get("wfm_status_id") not in (3, 12, 23)
-                ]
-                delivery_order.active_deliveries_count = len(active)
+                driver_sales = get_driver_sales(str(driver_id), page_size=200, use_service_auth=True)
+                logger.info(f"[Track] Driver {driver_id} total sales: {len(driver_sales)}")
+                
+                # Structure each sale to ensure status_code is present
+                structured_sales = [structure_sales_detail(s) for s in driver_sales]
+                
+                for s in structured_sales:
+                    status_id = _as_int(s.get("wfm_status_id"))
+                    status_code = _as_str(s.get("status_code"))
+                    sn = _as_str(s.get("sales_number"))
+                    logger.info(f"  Sales {sn}: wfm_status_id={status_id}, status_code={status_code}, open={_is_open_queue_status(s)}")
+                
+                queue_sales = [s for s in structured_sales if _is_open_queue_status(s)]
+                logger.info(f"[Track] Open queue sales count: {len(queue_sales)}")
+
+                # Sort using driver's saved sort_order from local DB — this is the source of truth,
+                # consistent with what the driver sees in their view.
+                queue_sales_numbers = [_as_str(s.get("sales_number")) for s in queue_sales]
+                local_rows_for_driver = {
+                    row.sales_number: row
+                    for row in repo.get_by_sales_numbers([sn for sn in queue_sales_numbers if sn])
+                }
+
+                def _sort_key(pair: tuple) -> tuple:
+                    original_idx, sale = pair
+                    sn = _as_str(sale.get("sales_number")) or ""
+                    local = local_rows_for_driver.get(sn)
+                    so = local.sort_order if local and local.sort_order is not None else None
+                    return (so is None, so if so is not None else 10**9, original_idx)
+
+                indexed_queue_sales = sorted(enumerate(queue_sales), key=_sort_key)
+                queue_sales = [sale for _, sale in indexed_queue_sales]
+
+                delivery_order.active_deliveries_count = len(queue_sales)
+                logger.info(f"[Track] Setting active_deliveries_count: {delivery_order.active_deliveries_count}")
+
+                my_sales_number = _as_str(detail.get("sales_number")) or _as_str(delivery_order.sales_number)
+                my_sales_id = _as_str(detail.get("sales_id")) or _as_str(delivery_order.sales_id)
+
+                my_index: Optional[int] = None
+                current_driver_index: Optional[int] = None
+
+                for idx, sale in enumerate(queue_sales):
+                    sale_sales_number = _as_str(sale.get("sales_number"))
+                    sale_sales_id = _as_str(sale.get("sales_id"))
+                    sale_status_id = _as_int(sale.get("wfm_status_id"))
+
+                    if (
+                        my_index is None
+                        and (
+                            (my_sales_number and sale_sales_number == my_sales_number)
+                            or (my_sales_id and sale_sales_id == my_sales_id)
+                        )
+                    ):
+                        my_index = idx
+
+                    # Driver's current active stop is wfm_status_id=8.
+                    if current_driver_index is None and sale_status_id == 8:
+                        current_driver_index = idx
+
+                if current_driver_index is None and queue_sales:
+                    current_driver_index = 0
+
+                delivery_order.deliveries_before_mine = my_index
+                delivery_order.driver_current_order_index = current_driver_index
         return delivery_order
     except HTTPException:
         raise
