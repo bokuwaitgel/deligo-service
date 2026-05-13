@@ -124,6 +124,20 @@ def sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_status_description(token: str, sales_id: str, status_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Fetch the latest status description for a sales record."""
+    payload: Dict[str, Any] = {"id": sales_id}
+    if status_id is not None:
+        payload["statusId"] = status_id
+    body = _post("/api/sales/getStatusDescription", json=payload, token=token)
+    if isinstance(body, dict):
+        data = body.get("data")
+        print(f"[Deligo] getStatusDescription for sales_id={sales_id} status_id={status_id} response data keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+        if isinstance(data, dict):
+            return data
+    return None
+
+
 def change_status(
     token: str,
     sales_id: str,

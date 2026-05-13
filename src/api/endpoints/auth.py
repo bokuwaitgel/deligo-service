@@ -4,7 +4,7 @@ so the frontend never talks to api.deligo.mn directly with raw credentials.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ from src.services.deligo_user_proxy import (
     DeligoApiError,
     change_status,
     driver_orders,
+    get_status_description,
     login as deligo_login,
     pick_company_id,
     pick_driver_id,
@@ -361,11 +362,15 @@ def change_status_endpoint(
 ):
     _require_token(token)
     try:
+        # Prefer explicit status_description; fall back to the note inside proof
+        effective_description = payload.status_description or (
+            (payload.proof or {}).get("note") or None
+        )
         result = change_status(
             token,
             payload.sales_id,
             payload.status_id,
-            status_description=payload.status_description,
+            status_description=effective_description,
             proof=payload.proof,
         )
     except DeligoApiError as exc:
@@ -376,3 +381,19 @@ def change_status_endpoint(
     if isinstance(warning, str) and warning.strip():
         response["warning"] = warning.strip()
     return response
+
+
+@router.get("/orders/status-description/{sales_id}")
+def get_status_description_endpoint(
+    sales_id: str,
+    status_id: Optional[int] = None,
+    token: str = Depends(get_bearer_token),
+):
+    _require_token(token)
+    try:
+        data = get_status_description(token, sales_id, status_id=status_id)
+    except DeligoApiError as exc:
+        raise _handle_deligo_error(exc) from exc
+    if data is None:
+        raise HTTPException(status_code=404, detail="No status description found")
+    return {"status": "ok", "data": data}

@@ -6,6 +6,7 @@ import re
 from typing import Any, cast
 
 import googlemaps
+import httpx
 from dotenv import load_dotenv
 
 from schemas.delivery import Building, Location
@@ -14,14 +15,65 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Deligo currently provisions newer Google APIs in some environments.
-# Keep legacy Places Find Place opt-in to avoid REQUEST_DENIED when legacy is disabled.
-_ENABLE_LEGACY_FIND_PLACE = os.getenv("ENABLE_LEGACY_FIND_PLACE", "false").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
+# ---------------------------------------------------------------------------
+# District normalization — mirrors frontend geocoding.ts
+# ---------------------------------------------------------------------------
+_DISTRICT_MAP_EN: dict[str, str] = {
+    "bgd": "Bayangol",
+    "sbd": "Sukhbaatar",
+    "bzd": "Bayanzurkh",
+    "chd": "Chingeltei",
+    "khud": "Khan-Uul",
+    "hud": "Khan-Uul",
+    "shd": "Songinokhairkhan",
+    "skhd": "Songinokhairkhan",
+    "nad": "Nalaikh",
+    "bnd": "Baganuur",
 }
+_DISTRICT_MAP_MN: dict[str, str] = {
+    "бгд": "Bayangol",
+    "сбд": "Sukhbaatar",
+    "бзд": "Bayanzurkh",
+    "чд": "Chingeltei",
+    "худ": "Khan-Uul",
+    "схд": "Songinokhairkhan",
+    "скд": "Songinokhairkhan",
+    "нд": "Nalaikh",
+    "бд": "Baganuur",
+}
+_DISTRICT_NAMES_MAP: dict[str, str] = {
+    "сүхбаатар": "Sukhbaatar",
+    "sukhbaatar": "Sukhbaatar",
+    "чингэлтэй": "Chingeltei",
+    "chingeltei": "Chingeltei",
+    "баянгол": "Bayangol",
+    "bayangol": "Bayangol",
+    "хан-уул": "Khan-Uul",
+    "khan-uul": "Khan-Uul",
+    "баянзүрх": "Bayanzurkh",
+    "bayanzurkh": "Bayanzurkh",
+    "сонгинохайрхан": "Songinokhairkhan",
+    "songinokhairkhan": "Songinokhairkhan",
+    "налайх": "Nalaikh",
+    "nalaikh": "Nalaikh",
+    "багахангай": "Bagakhangai",
+    "bagakhangai": "Bagakhangai",
+    "багануур": "Baganuur",
+    "baganuur": "Baganuur",
+}
+
+
+def _normalize_district(raw: str) -> str:
+    """Normalize a raw district string to canonical English — mirrors frontend normalizeDistrict()."""
+    lower = raw.lower().strip()
+    if lower in _DISTRICT_MAP_EN:
+        return _DISTRICT_MAP_EN[lower]
+    if lower in _DISTRICT_MAP_MN:
+        return _DISTRICT_MAP_MN[lower]
+    for key, value in _DISTRICT_NAMES_MAP.items():
+        if key in lower:
+            return value
+    return raw[0].upper() + raw[1:] if raw else raw
 
 _gmaps: googlemaps.Client | None = None
 
@@ -45,15 +97,15 @@ def _extract_component(components: list[dict], type_name: str) -> str | None:
 
 
 def _extract_khoroo(value: str | None) -> str | None:
-    """Extract khoroo number from a string like '1-р хороо', '4 khoroo', 'CHD-4'."""
+    """Extract khoroo number from a string — mirrors frontend parseKhoroo()."""
     if not value:
         return None
-    # "1-р хороо", "4-р хороо", "4 хороо"
-    match = re.search(r"(\d+)\s*-?\s*(?:р\s+)?(?:khoroo|хороо)", value, re.IGNORECASE)
+    # "1-р хороо", "4 хороо", "1 khoroo"
+    match = re.search(r"(\d+)(?:-р)?\s*(?:khoroo|хороо)", value, re.IGNORECASE)
     if match:
         return match.group(1)
-    # Standalone digit at end like "CHD - 4"
-    match = re.search(r"-\s*(\d+)\s*$", value)
+    # "khoroo 15" or "хороо 15"
+    match = re.search(r"(?:khoroo|хороо)\s*(\d+)", value, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
@@ -88,33 +140,37 @@ def parse_geocode_result(result: dict) -> Location:
         or _extract_component(components, "administrative_area_level_1")
     )
 
-    # In Mongolia: administrative_area_level_2 = дүүрэг, sublocality_level_1 = хороо
-    district = (
-        _extract_component(components, "administrative_area_level_2")
+    # District: sublocality first (same priority as frontend), then administrative_area_level_2
+    sublocality = (
+        _extract_component(components, "sublocality")
         or _extract_component(components, "sublocality_level_1")
-        or _extract_component(components, "sublocality")
-        or _extract_component(components, "neighborhood")
     )
+    admin_level_2 = _extract_component(components, "administrative_area_level_2")
 
-    # khoroo: sublocality_level_1 is usually "N-р хороо" in UB
-    khoroo_raw = (
-        _extract_component(components, "sublocality_level_1")
-        or _extract_component(components, "sublocality_level_2")
-        or _extract_component(components, "neighborhood")
-    )
+    district_raw = sublocality or admin_level_2 or None
+    district = _normalize_district(district_raw) if district_raw else None
+
+    # khoroo: neighborhood first (same priority as frontend), then sublocality fields
+    neighborhood = _extract_component(components, "neighborhood")
+    khoroo_raw = neighborhood or _extract_component(components, "sublocality_level_1") or _extract_component(components, "sublocality_level_2")
     khoroo = _extract_khoroo(khoroo_raw)
-
-    # If district and khoroo_raw are the same string, district should be level_2
-    if district == khoroo_raw and _extract_component(components, "administrative_area_level_2"):
-        district = _extract_component(components, "administrative_area_level_2")
+    # Fallback: scan the entire formatted_address (mirrors frontend)
+    if not khoroo:
+        khoroo = _extract_khoroo(result.get("formatted_address", ""))
 
     # Building / premise
     premise = _extract_component(components, "premise")
     building = Building(building=premise, entrance=None, floor=None, door=None, extra_notes=None) if premise else None
 
-    street_number = _extract_component(components, "street_number") or ""
+    # Street address: route first, then street_number — mirrors frontend (route + streetNumber)
     route = _extract_component(components, "route") or ""
-    street_address = f"{street_number} {route}".strip() or None
+    street_number = _extract_component(components, "street_number") or ""
+    if route:
+        street_address: str | None = f"{route} {street_number}".strip() if street_number else route
+    elif premise:
+        street_address = premise
+    else:
+        street_address = None
 
     return Location(
         latitude=location.get("lat", 0.0),
@@ -272,26 +328,50 @@ def geocode_address(address: str) -> Location:
     else:
         query = f"{address}, Улаанбаатар, Монгол"
 
-    # --- Step 1: Optional Find Place (legacy Places API) ---
-    if _ENABLE_LEGACY_FIND_PLACE:
-        try:
-            fp_result = client.find_place(  # type: ignore
-                input=query,
-                input_type="textquery",
-                fields=["geometry", "formatted_address", "place_id"],
-                language="mn",
-                location_bias=f"rectangle:{_MN_BOUNDS['southwest']['lat']},{_MN_BOUNDS['southwest']['lng']}|{_MN_BOUNDS['northeast']['lat']},{_MN_BOUNDS['northeast']['lng']}",
-            )
-            candidates = fp_result.get("candidates", [])
-            mn_candidates = [c for c in candidates if _is_in_mongolia(c) or (
-                _MN_BOUNDS["southwest"]["lat"] <= c.get("geometry", {}).get("location", {}).get("lat", 0) <= _MN_BOUNDS["northeast"]["lat"]
-            )]
-            if mn_candidates:
-                loc = _location_from_find_place(mn_candidates[0], address)
-                if loc:
-                    return loc
-        except Exception as e:
-            logger.warning("find_place failed for %r: %s", address, e)
+    # --- Step 1: Places API (New) Text Search ---
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    try:
+        resp = httpx.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            json={
+                "textQuery": query,
+                "languageCode": "mn",
+                "locationRestriction": {
+                    "rectangle": {
+                        "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
+                        "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
+                    }
+                },
+            },
+            headers={
+                "X-Goog-Api-Key": api_key,
+                "X-Goog-FieldMask": "places.location,places.formattedAddress,places.id",
+                "Content-Type": "application/json",
+            },
+            timeout=5,
+        )
+        if resp.ok:
+            places = resp.json().get("places", [])
+            if places:
+                first = places[0]
+                loc_data = first.get("location", {})
+                lat = loc_data.get("latitude")
+                lng = loc_data.get("longitude")
+                if lat and lng and _MN_BOUNDS["southwest"]["lat"] <= lat <= _MN_BOUNDS["northeast"]["lat"]:
+                    loc = _location_from_find_place(
+                        {
+                            "geometry": {"location": {"lat": lat, "lng": lng}},
+                            "formatted_address": first.get("formattedAddress", ""),
+                            "address_components": [],
+                        },
+                        address,
+                    )
+                    if loc:
+                        return loc
+        else:
+            logger.warning("Places API (New) returned %s for %r", resp.status_code, query)
+    except Exception as e:
+        logger.warning("Places API (New) text search failed for %r: %s", address, e)
 
     # --- Step 2: Geocoding API ---
     results = client.geocode(  # type: ignore
