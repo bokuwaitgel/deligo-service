@@ -402,6 +402,19 @@ def _places_text_search(
         return None
 
 
+def _apply_address_hints(loc: Location, district_hint: str | None, khoroo_hint: str | None) -> Location:
+    """Override khoroo/district on a geocoded Location with hints parsed directly from
+    the raw address text.  The explicit address text is more reliable than Google's
+    reverse-geocoding for Mongolian khoroo-level granularity (e.g. a named
+    microdistrict like "Нарны хороолол" can straddle multiple khoroos)."""
+    updates: dict = {}
+    if khoroo_hint:
+        updates["khoroo"] = khoroo_hint
+    if district_hint and loc.district is None:
+        updates["district"] = district_hint
+    return loc.model_copy(update=updates) if updates else loc
+
+
 def geocode_address(address: str) -> Location:
     """Geocode an address string using Google Maps API, restricted to Mongolia.
 
@@ -474,7 +487,7 @@ def geocode_address(address: str) -> Location:
         }
         loc = _places_text_search(targeted_query, api_key, location_bias=circle_bias)
         if loc:
-            return loc
+            return _apply_address_hints(loc, district_hint, khoroo_hint)
 
     # --- Step 2: Places API with whole-Mongolia rectangle (wider fallback) ---
     mn_restriction = {
@@ -485,7 +498,7 @@ def geocode_address(address: str) -> Location:
     }
     loc = _places_text_search(base_query, api_key, location_restriction=mn_restriction)
     if loc:
-        return loc
+        return _apply_address_hints(loc, district_hint, khoroo_hint)
 
     # --- Step 3: Geocoding API ---
     results = client.geocode(  # type: ignore
@@ -503,4 +516,4 @@ def geocode_address(address: str) -> Location:
     if not mn_results:
         raise ValueError(f"No results found in Mongolia for address: {address}")
 
-    return parse_geocode_result(_best_result(mn_results))
+    return _apply_address_hints(parse_geocode_result(_best_result(mn_results)), district_hint, khoroo_hint)
