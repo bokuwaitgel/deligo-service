@@ -97,15 +97,18 @@ def _extract_component(components: list[dict], type_name: str) -> str | None:
 
 
 def _extract_khoroo(value: str | None) -> str | None:
-    """Extract khoroo number from a string — mirrors frontend parseKhoroo()."""
+    """Extract khoroo number from a string — mirrors frontend parseKhoroo().
+
+    IMPORTANT: Must NOT match "хороолол" (нэгдэл) — only standalone "хороо".
+    """
     if not value:
         return None
-    # "1-р хороо", "4 хороо", "1 khoroo"
-    match = re.search(r"(\d+)(?:-р)?\s*(?:khoroo|хороо)", value, re.IGNORECASE)
+    # "1-р хороо", "4 хороо", "1 khoroo" — require хороо NOT followed by Cyrillic (avoids хороолол)
+    match = re.search(r"(\d+)(?:-р)?\s*(?:khoroo|хороо)(?![\u0400-\u04FF])", value, re.IGNORECASE)
     if match:
         return match.group(1)
-    # "khoroo 15" or "хороо 15"
-    match = re.search(r"(?:khoroo|хороо)\s*(\d+)", value, re.IGNORECASE)
+    # "khoroo 15" or "хороо 15" — same lookahead
+    match = re.search(r"(?:khoroo|хороо)(?![\u0400-\u04FF])\s*(\d+)", value, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
@@ -289,6 +292,19 @@ def _location_from_find_place(candidate: dict, original_address: str) -> Locatio
         )
 
 
+# Canonical English name → primary Mongolian name (for building targeted queries)
+_DISTRICT_CANONICAL_TO_MN: dict[str, str] = {
+    "Bayangol":         "Баянгол",
+    "Sukhbaatar":       "Сүхбаатар",
+    "Chingeltei":       "Чингэлтэй",
+    "Bayanzurkh":       "Баянзүрх",
+    "Khan-Uul":         "Хан-Уул",
+    "Songinokhairkhan": "Сонгинохайрхан",
+    "Nalaikh":          "Налайх",
+    "Baganuur":         "Багануур",
+    "Bagakhangai":      "Багахангай",
+}
+
 # Approximate centre coordinates for each UB district — used to build tight location bias.
 _DISTRICT_CENTERS: dict[str, tuple[float, float]] = {
     "Bayangol":          (47.9077, 106.8832),
@@ -418,17 +434,38 @@ def geocode_address(address: str) -> Location:
     else:
         base_query = f"{address}, Улаанбаатар, Монгол"
 
-    # When both district and khoroo are known, build an even more specific query
-    if district_hint and khoroo_hint and district_hint not in base_query:
-        targeted_query = f"{address}, {khoroo_hint}-р хороо, {district_hint} дүүрэг, Улаанбаатар, Монгол"
-    else:
-        targeted_query = base_query
+    # Build targeted query: append only context that is NOT already present in the address.
+    # Use Mongolian district name so Google's NLP stays in Mongolian context.
+    mn_district = _DISTRICT_CANONICAL_TO_MN.get(district_hint, district_hint) if district_hint else None
+    district_in_query = mn_district is not None and mn_district.lower() in lower
+    khoroo_in_query = bool(
+        khoroo_hint
+        and re.search(
+            rf"(?<!\d){re.escape(khoroo_hint)}\s*(?:-\s*р\s+)?(?:khoroo|хороо)(?![\u0400-\u04FF])",
+            lower,
+            re.IGNORECASE,
+        )
+    )
+    extra: list[str] = []
+    if khoroo_hint and not khoroo_in_query:
+        extra.append(f"{khoroo_hint}-р хороо")
+    if mn_district and not district_in_query:
+        extra.append(f"{mn_district} дүүрэг")
+    if not has_ub_city:
+        extra.append("Улаанбаатар")
+    if not has_mn_country:
+        extra.append("Монгол")
+    targeted_query = f"{address}, {', '.join(extra)}" if extra else base_query
 
     # --- Step 1: Places API with tight district-level circle bias ---
     if district_hint and district_hint in _DISTRICT_CENTERS:
         center_lat, center_lng = _DISTRICT_CENTERS[district_hint]
-        # Radius ~2 km when khoroo is known, ~5 km for district-only
-        radius_m = 2000 if khoroo_hint else 5000
+        # Scale radius by khoroo number: outer кhoroos (high numbers) are far from centre.
+        # District-only: 7 km.  Inner кhoroo (≤10): 4 km.  Outer кhoroo (>10): 6 km.
+        if khoroo_hint:
+            radius_m = 6000 if int(khoroo_hint) > 10 else 4000
+        else:
+            radius_m = 7000
         circle_bias = {
             "circle": {
                 "center": {"latitude": center_lat, "longitude": center_lng},
