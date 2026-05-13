@@ -325,6 +325,18 @@ async def update_delivery_eta(
         raise HTTPException(status_code=404, detail="Delivery order not found")
     return updated
 
+
+@router.delete("/{sales_number}", dependencies=[Depends(require_api_key)])
+async def delete_delivery_order(
+    sales_number: str,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Delete a delivery order by sales_number."""
+    deleted = repo.delete(sales_number)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    return {"status": "deleted", "sales_number": sales_number}
+
 # ---------------------------------------------------------------------------
 # User View Endpoints 
 # ---------------------------------------------------------------------------
