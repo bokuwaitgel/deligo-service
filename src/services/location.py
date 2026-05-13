@@ -6,6 +6,7 @@ import re
 from typing import Any, cast
 
 import googlemaps
+import httpx
 from dotenv import load_dotenv
 
 from schemas.delivery import Building, Location
@@ -14,13 +15,68 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# District normalization — mirrors frontend geocoding.ts
+# ---------------------------------------------------------------------------
+_DISTRICT_MAP_EN: dict[str, str] = {
+    "bgd": "Bayangol", "sbd": "Sukhbaatar", "bzd": "Bayanzurkh",
+    "chd": "Chingeltei", "khud": "Khan-Uul", "hud": "Khan-Uul",
+    "shd": "Songinokhairkhan", "skhd": "Songinokhairkhan",
+    "nad": "Nalaikh", "bnd": "Baganuur",
+}
+_DISTRICT_MAP_MN: dict[str, str] = {
+    "бгд": "Bayangol", "сбд": "Sukhbaatar", "бзд": "Bayanzurkh",
+    "чд": "Chingeltei", "худ": "Khan-Uul",
+    "схд": "Songinokhairkhan", "скд": "Songinokhairkhan",
+    "нд": "Nalaikh", "бд": "Baganuur",
+}
+_DISTRICT_NAMES_MAP: dict[str, str] = {
+    "сүхбаатар": "Sukhbaatar", "sukhbaatar": "Sukhbaatar",
+    "чингэлтэй": "Chingeltei", "chingeltei": "Chingeltei",
+    "баянгол": "Bayangol", "bayangol": "Bayangol",
+    "хан-уул": "Khan-Uul", "khan-uul": "Khan-Uul",
+    "баянзүрх": "Bayanzurkh", "bayanzurkh": "Bayanzurkh",
+    "сонгинохайрхан": "Songinokhairkhan", "songinokhairkhan": "Songinokhairkhan",
+    "налайх": "Nalaikh", "nalaikh": "Nalaikh",
+    "багахангай": "Bagakhangai", "bagakhangai": "Bagakhangai",
+    "багануур": "Baganuur", "baganuur": "Baganuur",
+}
+_DISTRICT_CANONICAL_TO_MN: dict[str, str] = {
+    "Bayangol": "Баянгол", "Sukhbaatar": "Сүхбаатар",
+    "Chingeltei": "Чингэлтэй", "Bayanzurkh": "Баянзүрх",
+    "Khan-Uul": "Хан-Уул", "Songinokhairkhan": "Сонгинохайрхан",
+    "Nalaikh": "Налайх", "Baganuur": "Багануур", "Bagakhangai": "Багахангай",
+}
+
+
+def _normalize_district(raw: str) -> str:
+    """Normalize a raw district string to canonical English — mirrors frontend normalizeDistrict()."""
+    lower = raw.lower().strip()
+    if lower in _DISTRICT_MAP_EN:
+        return _DISTRICT_MAP_EN[lower]
+    if lower in _DISTRICT_MAP_MN:
+        return _DISTRICT_MAP_MN[lower]
+    for key, value in _DISTRICT_NAMES_MAP.items():
+        if key in lower:
+            return value
+    return raw[0].upper() + raw[1:] if raw else raw
+
+
+# Approximate centre coords per district for tight Places API bias
+_DISTRICT_CENTERS: dict[str, tuple[float, float]] = {
+    "Bayangol": (47.9077, 106.8832), "Sukhbaatar": (47.9198, 106.9195),
+    "Chingeltei": (47.9318, 106.8921), "Bayanzurkh": (47.9174, 107.0024),
+    "Khan-Uul": (47.8654, 106.8850), "Songinokhairkhan": (47.9441, 106.7844),
+    "Nalaikh": (47.7572, 107.2964), "Baganuur": (47.7100, 108.2790),
+    "Bagakhangai": (47.8483, 106.3600),
+}
+
+# ---------------------------------------------------------------------------
+
 # Deligo currently provisions newer Google APIs in some environments.
 # Keep legacy Places Find Place opt-in to avoid REQUEST_DENIED when legacy is disabled.
 _ENABLE_LEGACY_FIND_PLACE = os.getenv("ENABLE_LEGACY_FIND_PLACE", "false").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
+    "1", "true", "yes", "on",
 }
 
 _gmaps: googlemaps.Client | None = None
@@ -45,15 +101,15 @@ def _extract_component(components: list[dict], type_name: str) -> str | None:
 
 
 def _extract_khoroo(value: str | None) -> str | None:
-    """Extract khoroo number from a string like '1-р хороо', '4 khoroo', 'CHD-4'."""
+    """Extract khoroo number — mirrors frontend parseKhoroo(). Must NOT match хороолол."""
     if not value:
         return None
-    # "1-р хороо", "4-р хороо", "4 хороо"
-    match = re.search(r"(\d+)\s*-?\s*(?:р\s+)?(?:khoroo|хороо)", value, re.IGNORECASE)
+    # "1-р хороо", "4 хороо", "1 khoroo" — хороо must NOT be followed by Cyrillic (avoids хороолол)
+    match = re.search(r"(\d+)(?:-р)?\s*(?:khoroo|хороо)(?![\u0400-\u04FF])", value, re.IGNORECASE)
     if match:
         return match.group(1)
-    # Standalone digit at end like "CHD - 4"
-    match = re.search(r"-\s*(\d+)\s*$", value)
+    # "khoroo 15" or "хороо 15"
+    match = re.search(r"(?:khoroo|хороо)(?![\u0400-\u04FF])\s*(\d+)", value, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
@@ -88,33 +144,40 @@ def parse_geocode_result(result: dict) -> Location:
         or _extract_component(components, "administrative_area_level_1")
     )
 
-    # In Mongolia: administrative_area_level_2 = дүүрэг, sublocality_level_1 = хороо
-    district = (
-        _extract_component(components, "administrative_area_level_2")
+    # District: sublocality first (same priority as frontend), then administrative_area_level_2
+    sublocality = (
+        _extract_component(components, "sublocality")
         or _extract_component(components, "sublocality_level_1")
-        or _extract_component(components, "sublocality")
-        or _extract_component(components, "neighborhood")
     )
+    admin_level_2 = _extract_component(components, "administrative_area_level_2")
+    district_raw = sublocality or admin_level_2 or None
+    district = _normalize_district(district_raw) if district_raw else None
 
-    # khoroo: sublocality_level_1 is usually "N-р хороо" in UB
+    # khoroo: neighborhood first (same priority as frontend), then sublocality fields
+    neighborhood = _extract_component(components, "neighborhood")
     khoroo_raw = (
-        _extract_component(components, "sublocality_level_1")
+        neighborhood
+        or _extract_component(components, "sublocality_level_1")
         or _extract_component(components, "sublocality_level_2")
-        or _extract_component(components, "neighborhood")
     )
     khoroo = _extract_khoroo(khoroo_raw)
-
-    # If district and khoroo_raw are the same string, district should be level_2
-    if district == khoroo_raw and _extract_component(components, "administrative_area_level_2"):
-        district = _extract_component(components, "administrative_area_level_2")
+    # Fallback: scan entire formatted_address (mirrors frontend)
+    if not khoroo:
+        khoroo = _extract_khoroo(result.get("formatted_address", ""))
 
     # Building / premise
     premise = _extract_component(components, "premise")
     building = Building(building=premise, entrance=None, floor=None, door=None, extra_notes=None) if premise else None
 
-    street_number = _extract_component(components, "street_number") or ""
+    # Street address: route first, then street_number — mirrors frontend (route + streetNumber)
     route = _extract_component(components, "route") or ""
-    street_address = f"{street_number} {route}".strip() or None
+    street_number = _extract_component(components, "street_number") or ""
+    if route:
+        street_address: str | None = f"{route} {street_number}".strip() if street_number else route
+    elif premise:
+        street_address = premise
+    else:
+        street_address = None
 
     return Location(
         latitude=location.get("lat", 0.0),
@@ -233,6 +296,72 @@ def _location_from_find_place(candidate: dict, original_address: str) -> Locatio
         )
 
 
+def _extract_district_from_query(address: str) -> str | None:
+    """Detect canonical district name embedded in a raw address string."""
+    lower = address.lower()
+    for key, value in _DISTRICT_NAMES_MAP.items():
+        if key in lower:
+            return value
+    for key, value in _DISTRICT_MAP_MN.items():
+        if re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", lower):
+            return value
+    for key, value in _DISTRICT_MAP_EN.items():
+        if re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", lower):
+            return value
+    return None
+
+
+def _places_text_search(
+    query: str,
+    api_key: str,
+    *,
+    location_bias: dict | None = None,
+    location_restriction: dict | None = None,
+) -> Location | None:
+    """Call Places API (New) searchText and return a Location or None."""
+    body: dict = {"textQuery": query, "languageCode": "mn"}
+    if location_bias:
+        body["locationBias"] = location_bias
+    elif location_restriction:
+        body["locationRestriction"] = location_restriction
+    try:
+        resp = httpx.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            json=body,
+            headers={
+                "X-Goog-Api-Key": api_key,
+                "X-Goog-FieldMask": "places.location,places.formattedAddress,places.id",
+                "Content-Type": "application/json",
+            },
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            logger.warning("Places API (New) returned %s for %r", resp.status_code, query)
+            return None
+        places = resp.json().get("places", [])
+        if not places:
+            return None
+        first = places[0]
+        loc_data = first.get("location", {})
+        lat = loc_data.get("latitude")
+        lng = loc_data.get("longitude")
+        if not lat or not lng:
+            return None
+        if not (_MN_BOUNDS["southwest"]["lat"] <= lat <= _MN_BOUNDS["northeast"]["lat"]):
+            return None
+        return _location_from_find_place(
+            {
+                "geometry": {"location": {"lat": lat, "lng": lng}},
+                "formatted_address": first.get("formattedAddress", ""),
+                "address_components": [],
+            },
+            query,
+        )
+    except Exception as e:
+        logger.warning("Places API (New) text search failed for %r: %s", query, e)
+        return None
+
+
 def _ub_district_keywords() -> list[str]:
     return [
         "хан-уул", "khan-uul", "khan uul",
@@ -250,13 +379,19 @@ def geocode_address(address: str) -> Location:
     """Geocode an address string using Google Maps API, restricted to Mongolia.
 
     Strategy:
-    1. (Optional) Find Place (Places Legacy API) – best for named buildings
-    2. Geocoding API with UB hint – primary and fallback for structured addresses
+    1. Detect district + khoroo from raw input.
+    2. Places API (New) with tight circle bias around district centre.
+    3. Places API (New) with whole-Mongolia rectangle fallback.
+    4. Geocoding API with targeted query.
     """
     client = _get_client()
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
     lower = address.lower()
 
-    # Build a clean query with appropriate location hints
+    # Detect district and khoroo from raw input
+    district_hint = _extract_district_from_query(address)
+    khoroo_hint = _extract_khoroo(address)
+
     _ub_city_keywords = ["ulaanbaatar", "улаанбаатар"]
     _mn_country_keywords = ["монгол", "mongolia"]
     has_ub_city = any(k in lower for k in _ub_city_keywords)
@@ -264,38 +399,69 @@ def geocode_address(address: str) -> Location:
     has_ub_district = any(k in lower for k in _ub_district_keywords())
 
     if has_ub_city:
-        # Already has city name, just ensure country context
-        query = address if has_mn_country else f"{address}, Монгол"
-    elif has_ub_district:
-        # Has a UB district name but no city — append city so Google stays in UB
-        query = f"{address}, Улаанбаатар, Монгол"
+        base_query = address if has_mn_country else f"{address}, Монгол"
     else:
-        query = f"{address}, Улаанбаатар, Монгол"
+        base_query = f"{address}, Улаанбаатар, Монгол"
 
-    # --- Step 1: Optional Find Place (legacy Places API) ---
-    if _ENABLE_LEGACY_FIND_PLACE:
-        try:
-            fp_result = client.find_place(  # type: ignore
-                input=query,
-                input_type="textquery",
-                fields=["geometry", "formatted_address", "place_id"],
-                language="mn",
-                location_bias=f"rectangle:{_MN_BOUNDS['southwest']['lat']},{_MN_BOUNDS['southwest']['lng']}|{_MN_BOUNDS['northeast']['lat']},{_MN_BOUNDS['northeast']['lng']}",
-            )
-            candidates = fp_result.get("candidates", [])
-            mn_candidates = [c for c in candidates if _is_in_mongolia(c) or (
-                _MN_BOUNDS["southwest"]["lat"] <= c.get("geometry", {}).get("location", {}).get("lat", 0) <= _MN_BOUNDS["northeast"]["lat"]
-            )]
-            if mn_candidates:
-                loc = _location_from_find_place(mn_candidates[0], address)
-                if loc:
-                    return loc
-        except Exception as e:
-            logger.warning("find_place failed for %r: %s", address, e)
+    # Build targeted query: append only context NOT already present
+    mn_district = _DISTRICT_CANONICAL_TO_MN.get(district_hint, district_hint) if district_hint else None
+    district_in_query = mn_district is not None and mn_district.lower() in lower
+    khoroo_in_query = bool(
+        khoroo_hint
+        and re.search(
+            rf"(?<!\d){re.escape(khoroo_hint)}\s*(?:-\s*\u0440\s+)?(?:khoroo|\u0445\u043e\u0440\u043e\u043e)(?![\u0400-\u04FF])",
+            lower,
+            re.IGNORECASE,
+        )
+    )
+    extra: list[str] = []
+    if khoroo_hint and not khoroo_in_query:
+        extra.append(f"{khoroo_hint}-р хороо")
+    if mn_district and not district_in_query:
+        extra.append(f"{mn_district} дүүрэг")
+    if not has_ub_city:
+        extra.append("Улаанбаатар")
+    if not has_mn_country:
+        extra.append("Монгол")
+    targeted_query = f"{address}, {', '.join(extra)}" if extra else base_query
 
-    # --- Step 2: Geocoding API ---
+    # --- Step 1: Places API with tight district-level circle bias ---
+    if district_hint and district_hint in _DISTRICT_CENTERS:
+        center_lat, center_lng = _DISTRICT_CENTERS[district_hint]
+        if khoroo_hint:
+            radius_m = 6000 if int(khoroo_hint) > 10 else 4000
+        else:
+            radius_m = 7000
+        loc = _places_text_search(
+            targeted_query,
+            api_key,
+            location_bias={
+                "circle": {
+                    "center": {"latitude": center_lat, "longitude": center_lng},
+                    "radius": radius_m,
+                }
+            },
+        )
+        if loc:
+            return loc
+
+    # --- Step 2: Places API with whole-Mongolia rectangle ---
+    loc = _places_text_search(
+        base_query,
+        api_key,
+        location_restriction={
+            "rectangle": {
+                "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
+                "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
+            }
+        },
+    )
+    if loc:
+        return loc
+
+    # --- Step 3: Geocoding API ---
     results = client.geocode(  # type: ignore
-        query,
+        targeted_query,
         region="mn",
         language="mn",
         bounds=_MN_BOUNDS,
