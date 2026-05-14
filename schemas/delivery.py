@@ -56,12 +56,23 @@ class DeliveryOrderCreate(BaseModel):
     is_countryside: bool = Field(False, description="Skip Mongolia/UB suffix in geocoding")
 
 
+class LocationUpdateRequest(Location):
+    sales_id: str = Field(..., description="Sales ID of the delivery order")
+
+
 class AddressUpdateRequest(BaseModel):
+    sales_id: str = Field(..., description="Sales ID of the delivery order")
     customer_address: str = Field(..., description="New address string to re-geocode")
 
 
 class MapStatusUpdateRequest(BaseModel):
+    sales_id: str = Field(..., description="Sales ID of the delivery order")
     map_status: MapStatus = Field(..., description="Delivery map status (pending or completed)")
+
+
+class EtaUpdateRequest(BaseModel):
+    sales_id: str = Field(..., description="Sales ID of the delivery order")
+    eta_minutes: int = Field(..., ge=0, description="Estimated time to arrival in minutes")
 
 
 class DeliveryOrderResponse(BaseModel):

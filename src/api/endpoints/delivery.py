@@ -4,12 +4,15 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from schemas.delivery import (
     AddressUpdateRequest,
     DeliveryOrderCreate,
     DeliveryOrderResponse,
+    EtaUpdateRequest,
     Location,
+    LocationUpdateRequest,
     MapStatusUpdateRequest,
 )
 from schemas.database.delivery_db import DeliveryOrder
@@ -209,15 +212,18 @@ async def get_delivery_order_by_sales_id(
         logger.error(f"Error fetching delivery order by sales_id: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch delivery order")
     
-@router.patch("/{sales_number}/location", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+@router.post("/location", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 async def update_delivery_location(
-    sales_number: str,
-    location: Location,
+    body: LocationUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Update delivery location with pre-geocoded coordinates."""
+    existing = repo.get_by_sales_id(body.sales_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    location = Location(**body.model_dump(exclude={"sales_id"}))
     try:
-        updated_order = update_location(repo, sales_number, location)
+        updated_order = update_location(repo, existing.sales_number, location)
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")
         return updated_order
@@ -226,17 +232,19 @@ async def update_delivery_location(
     except Exception as e:
         logger.error(f"Error updating delivery location: {e}")
         raise HTTPException(status_code=500, detail="Failed to update delivery location")
-    
-@router.patch("/{sales_number}/address", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+
+@router.post("/address", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 async def update_delivery_address(
-    sales_number: str,
     address_update: AddressUpdateRequest,
     is_countryside: bool = Query(False, description="Skip Mongolia/UB suffix in geocoding"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Update delivery location by re-geocoding a new address."""
+    existing = repo.get_by_sales_id(address_update.sales_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
     try:
-        updated_order = update_location_by_address(repo, sales_number, address_update.customer_address, is_countryside)
+        updated_order = update_location_by_address(repo, existing.sales_number, address_update.customer_address, is_countryside)
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")
         return updated_order
@@ -291,15 +299,17 @@ async def complete_delivery_order(
         raise HTTPException(status_code=500, detail="Failed to complete delivery order")
 
 
-@router.patch("/{sales_number}/map_status", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+@router.post("/map_status", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 async def set_delivery_map_status(
-    sales_number: str,
     payload: MapStatusUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Set delivery map_status explicitly (pending/completed) from shop workflow."""
+    existing = repo.get_by_sales_id(payload.sales_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
     try:
-        updated_order = repo.update_partial(sales_number, {"map_status": payload.map_status.value})
+        updated_order = repo.update_partial(existing.sales_number, {"map_status": payload.map_status.value})
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
         return updated_order
@@ -310,32 +320,38 @@ async def set_delivery_map_status(
         raise HTTPException(status_code=500, detail="Failed to update map status")
 
 
-@router.patch("/{sales_number}/eta", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+@router.post("/eta", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 async def update_delivery_eta(
-    sales_number: str,
-    payload: dict,
+    payload: EtaUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Driver view calls this to persist the calculated ETA (in minutes) for a delivery."""
-    eta = payload.get("eta_minutes")
-    if eta is None or not isinstance(eta, (int, float)) or eta < 0:
-        raise HTTPException(status_code=400, detail="eta_minutes must be a non-negative number")
-    updated = repo.update_partial(sales_number, {"eta_minutes": int(eta)})
+    existing = repo.get_by_sales_id(payload.sales_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    updated = repo.update_partial(existing.sales_number, {"eta_minutes": payload.eta_minutes})
     if not updated:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     return updated
 
 
-@router.post("/delete/{sales_number}", dependencies=[Depends(require_api_key)])
+class _DeleteDeliveryRequest(BaseModel):
+    sales_id: str = Field(..., description="Sales ID of the delivery order")
+
+
+@router.post("/delete", dependencies=[Depends(require_api_key)])
 async def delete_delivery_order(
-    sales_number: str,
+    payload: _DeleteDeliveryRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Soft-delete a delivery order by setting map_status to 'deleted'."""
-    updated = repo.update_partial(sales_number, {"map_status": "deleted"})
+    existing = repo.get_by_sales_id(payload.sales_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    updated = repo.update_partial(existing.sales_number, {"map_status": "deleted"})
     if not updated:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    return {"status": "deleted", "sales_number": sales_number}
+    return {"status": "deleted", "sales_number": existing.sales_number, "sales_id": payload.sales_id}
 
 # ---------------------------------------------------------------------------
 # User View Endpoints 
