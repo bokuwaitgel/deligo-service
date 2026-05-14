@@ -21,6 +21,9 @@ class DriverLocationRepository:
             .first()
         )
 
+    def get_all(self) -> list[DriverLocationDB]:
+        return self.db_session.query(DriverLocationDB).order_by(DriverLocationDB.updated_at.desc()).all()
+
     def upsert(self, driver_id: str, latitude: float, longitude: float) -> DriverLocationDB:
         """Create or update driver location"""
         driver = self.get_by_driver_id(driver_id)

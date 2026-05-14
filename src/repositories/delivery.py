@@ -54,13 +54,15 @@ class DeliveryRepository:
         self.db_session.commit()
         return True
 
-    def get_by_sales_numbers(self, sales_numbers: List[str]) -> List[DeliveryOrder]:
+    def get_by_sales_numbers(self, sales_numbers: List[str], exclude_deleted: bool = False) -> List[DeliveryOrder]:
         """Fetch full order rows for a list of sales numbers in one query."""
-        return (
+        query = (
             self.db_session.query(DeliveryOrder)
             .filter(DeliveryOrder.sales_number.in_(sales_numbers))
-            .all()
         )
+        if exclude_deleted:
+            query = query.filter(DeliveryOrder.map_status != "deleted")
+        return query.all()
 
     def get_existing_sales_numbers(self, sales_numbers: List[str]) -> List[str]:
         """Return which of the given sales_numbers already exist in the DB."""
@@ -108,7 +110,10 @@ class DeliveryRepository:
     ) -> List[DeliveryOrder]:
         query = (
             self.db_session.query(DeliveryOrder)
-            .filter(DeliveryOrder.company_id == store_id)
+            .filter(
+                DeliveryOrder.company_id == store_id,
+                DeliveryOrder.map_status != "deleted",
+            )
             .order_by(DeliveryOrder.created_at.desc(), DeliveryOrder.sales_number.desc())
         )
         if cursor:

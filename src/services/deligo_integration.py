@@ -283,6 +283,30 @@ def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Option
     return structure_sales_detail(data)
 
 
+def get_status_description_service(
+    sales_id: str, status_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """Fetch the proof/description saved for a driver-only status using the service account."""
+    payload: Dict[str, Any] = {"id": sales_id}
+    if status_id is not None:
+        payload["statusId"] = status_id
+    r = _post_with_retry("/api/sales/getStatusDescription", payload, use_service_auth=True)
+    if r is None or r.status_code != 200:
+        return None
+    try:
+        body = r.json()
+        data = body.get("data")
+        if isinstance(data, dict):
+            # Normalise to { description, file_path } to match the frontend expectation.
+            return {
+                "description": data.get("description") or data.get("statusDescription") or data.get("note"),
+                "file_path": data.get("file_path") or data.get("filePath") or data.get("imageUrl") or data.get("image"),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def structure_sales_detail(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize the raw /api/sales/get payload and attach status info."""
     wfm_raw = raw.get("wfm_status_id")

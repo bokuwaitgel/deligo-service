@@ -15,6 +15,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/drivers", tags=["drivers"])
 
 
+@router.get("/locations", dependencies=[Depends(require_api_key)])
+def get_all_driver_locations(
+    repo: DriverLocationRepository = Depends(get_driver_location_repository),
+):
+    """Get all known driver locations"""
+    locs = repo.get_all()
+    return {
+        "status": "ok",
+        "data": [
+            {
+                "driver_id": loc.driver_id,
+                "latitude": loc.latitude,
+                "longitude": loc.longitude,
+                "updated_at": loc.updated_at.isoformat(),
+            }
+            for loc in locs
+        ],
+    }
+
+
 @router.post("/{driver_id}/location", dependencies=[Depends(require_api_key)])
 def update_driver_location_endpoint(
     driver_id: str,

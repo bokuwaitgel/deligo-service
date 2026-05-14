@@ -23,7 +23,7 @@ from src.services.delivery import (
     update_location,
     update_location_by_address,
 )
-from src.services.deligo_integration import change_sales_status, get_driver_sales, get_sales_detail, structure_sales_detail
+from src.services.deligo_integration import change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.middleware_order import get_orders_by_sales_numbers
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ async def get_delivery_order(
         if delivery_order.sales_id:
             detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True)
             if detail:
-                delivery_order.detail = detail
+                delivery_order.detail = detail  # type: ignore[attr-defined]
         return delivery_order
     except HTTPException:
         raise
@@ -201,7 +201,7 @@ async def get_delivery_order_by_sales_id(
         if delivery_order.sales_id:
             detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True)
             if detail:
-                delivery_order.detail = detail
+                delivery_order.detail = detail  # type: ignore[attr-defined]
         return delivery_order
     except HTTPException:
         raise
@@ -326,14 +326,14 @@ async def update_delivery_eta(
     return updated
 
 
-@router.delete("/{sales_number}", dependencies=[Depends(require_api_key)])
+@router.post("/delete/{sales_number}", dependencies=[Depends(require_api_key)])
 async def delete_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-    """Delete a delivery order by sales_number."""
-    deleted = repo.delete(sales_number)
-    if not deleted:
+    """Soft-delete a delivery order by setting map_status to 'deleted'."""
+    updated = repo.update_partial(sales_number, {"map_status": "deleted"})
+    if not updated:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     return {"status": "deleted", "sales_number": sales_number}
 
@@ -351,9 +351,25 @@ async def track_delivery_order(
         delivery_order = get_delivery(repo, sales_number)
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
+        if delivery_order.map_status == "deleted":
+            raise HTTPException(status_code=404, detail="Delivery order not found")
         detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True) if delivery_order.sales_id else None
         if detail:
-            delivery_order.detail = detail
+            delivery_order.detail = detail  # type: ignore[attr-defined]
+
+        # For driver-only sub-statuses fetch the saved proof (text + image) so the
+        # customer can see why the delivery wasn't completed on this attempt.
+        _DRIVER_ONLY_WITH_PROOF = {13, 14, 15, 16, 17, 23}
+        wfm_id = _as_int((detail or {}).get("wfm_status_id"))
+        if wfm_id in _DRIVER_ONLY_WITH_PROOF and delivery_order.sales_id:
+            try:
+                status_desc = get_status_description_service(str(delivery_order.sales_id), wfm_id)
+                if status_desc and (status_desc.get("description") or status_desc.get("file_path")):
+                    merged = dict(getattr(delivery_order, "detail", None) or {})
+                    merged["status_description"] = status_desc
+                    delivery_order.detail = merged  # type: ignore[attr-defined]
+            except Exception as _sd_err:
+                logger.warning("Failed to fetch status description for tracking: %s", _sd_err)
 
         # Deligo /sales/get can sometimes omit driver_id; use local fallback so
         # tracking counters don't stay null.
@@ -447,7 +463,7 @@ async def get_driver_deliveries(
 ):
     """List driver orders and auto-sync missing local delivery rows from Deligo payload."""
     try:
-        sales = get_driver_sales(driver_id, page_size=limit)
+        sales = get_driver_sales(driver_id, page_size=limit, use_service_auth=True)
         if not sales:
             return []
 
@@ -458,10 +474,15 @@ async def get_driver_deliveries(
                 details_by_number[sn] = structure_sales_detail(s)
 
         sales_numbers = list(details_by_number.keys())
-        local_rows = {d.sales_number: d for d in repo.get_by_sales_numbers(sales_numbers)}
+        # Build deleted set first so we don't re-surface soft-deleted orders.
+        all_local_rows = {d.sales_number: d for d in repo.get_by_sales_numbers(sales_numbers)}
+        deleted_numbers = {sn for sn, row in all_local_rows.items() if row.map_status == "deleted"}
+        local_rows = {sn: row for sn, row in all_local_rows.items() if row.map_status != "deleted"}
 
-        # Ensure every Deligo order has a local delivery row (for map/location workflows).
+        # Ensure every non-deleted Deligo order has a local delivery row (for map/location workflows).
         for sales_number in sales_numbers:
+            if sales_number in deleted_numbers:
+                continue
             if sales_number not in local_rows:
                 created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number])
                 if created is not None:
@@ -477,7 +498,7 @@ async def get_driver_deliveries(
             if local is None:
                 continue
             item = DeliveryOrderResponse.model_validate(local)
-            item.detail = details_by_number[sales_number]
+            item = item.model_copy(update={"detail": details_by_number[sales_number]})
             response.append(item)
         return response
     except HTTPException:
@@ -566,7 +587,7 @@ async def get_shop_deliveries(
                 detail_item = dict(detail[0])
                 # Keep both IDs available in payload while company_id remains the main scope.
                 detail_item.setdefault("company_id", delivery.store_id)
-                delivery_response.detail = detail_item
+                delivery_response = delivery_response.model_copy(update={"detail": detail_item})
             response.append(delivery_response)
         return response
 

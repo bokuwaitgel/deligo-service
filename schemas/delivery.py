@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class MapStatus(str, Enum):
     PENDING = "pending"
     COMPLETED = "completed"
+    DELETED = "deleted"
 
 
 class Building(BaseModel):
