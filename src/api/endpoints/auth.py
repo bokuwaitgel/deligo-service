@@ -106,6 +106,7 @@ class ChangeStatusRequest(BaseModel):
     status_description: str | None = None
     image_base64: str | None = None
     proof: Dict[str, Any] | None = None
+    status_publish_date: str | None = None
 
 
 def _sort_driver_items(
@@ -372,6 +373,7 @@ def change_status_endpoint(
             payload.status_id,
             status_description=effective_description,
             proof=payload.proof,
+            status_publish_date=payload.status_publish_date,
         )
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc

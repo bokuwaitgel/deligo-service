@@ -144,6 +144,7 @@ def change_status(
     status_id: int,
     status_description: Optional[str] = None,
     proof: Optional[Dict[str, Any]] = None,
+    status_publish_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     url = f"{DELIGO_API_URL}/api/sales/changestatus"
@@ -157,7 +158,10 @@ def change_status(
         if proof.get("image_base64") or proof.get("imageDataUrl"):
             payload["image"] = proof.get("image_base64") or proof.get("imageDataUrl")
 
-    print(f"[Deligo] POST /api/sales/changestatus  sales_id={sales_id} status_id={status_id} proof={'yes' if proof else 'no'}")
+    if status_publish_date:
+        payload["statusPublishDate"] = status_publish_date
+
+    print(f"[Deligo] POST /api/sales/changestatus  sales_id={sales_id} status_id={status_id} proof={'yes' if proof else 'no'} status_publish_date={status_publish_date}")
 
     max_attempts = 3
     retryable_statuses = {500, 502, 503, 504}
