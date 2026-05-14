@@ -312,18 +312,21 @@ def push_address_update(
     customer_address: str,
     latitude: float,
     longitude: float,
+    extra_notes: Optional[str] = None,
 ) -> bool:
     """Notify Deligo of an address/coordinate change via POST /api/sales/update/address.
 
     Best-effort: logs on failure but never raises.
     """
     print(f"[Deligo] POST /api/sales/update/address  id={sales_id}  lat={latitude}  lng={longitude}")
-    payload = {
+    payload: Dict[str, Any] = {
         "id": sales_id,
         "customerAddress": customer_address,
         "customerLat": str(latitude),
         "customerLng": str(longitude),
     }
+    if extra_notes:
+        payload["customerAddress"] += f" ({extra_notes})"
     r = _post_with_retry("/api/sales/update/address", payload, use_service_auth=True)
     if r is None or r.status_code != 200:
         status = r.status_code if r is not None else "no response"

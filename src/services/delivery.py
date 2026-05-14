@@ -107,7 +107,8 @@ def update_location(
     updated = repo.update_partial(sales_number, {"customer_location": location.model_dump(mode="json")})
     if updated and order.sales_id:
         address = location.formatted_address or order.customer_address or ""
-        push_address_update(str(order.sales_id), address, location.latitude, location.longitude)
+        extra_notes = location.building.extra_notes if location.building else None
+        push_address_update(str(order.sales_id), address, location.latitude, location.longitude, extra_notes=extra_notes)
     return DeliveryOrderResponse.model_validate(updated)
 
 
