@@ -7,6 +7,7 @@ from typing import Optional
 from schemas.database.delivery_db import DeliveryOrder
 from schemas.delivery import DeliveryOrderCreate, DeliveryOrderResponse, Location, MapStatus
 from src.repositories.delivery import DeliveryRepository
+from src.services.deligo_integration import push_address_update
 from src.services.location import geocode_address, reverse_geocode
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,9 @@ def update_location(
     if order.map_status == MapStatus.COMPLETED:
         return None
     updated = repo.update_partial(sales_number, {"customer_location": location.model_dump(mode="json")})
+    if updated and order.sales_id:
+        address = location.formatted_address or order.customer_address or ""
+        push_address_update(str(order.sales_id), address, location.latitude, location.longitude)
     return DeliveryOrderResponse.model_validate(updated)
 
 
@@ -123,6 +127,11 @@ def update_location_by_address(
         "customer_address": address,
         "customer_location": location_data,
     })
+    if updated and order.sales_id:
+        lat = location_data.get("latitude")
+        lng = location_data.get("longitude")
+        if lat is not None and lng is not None:
+            push_address_update(str(order.sales_id), address, float(lat), float(lng))
     return DeliveryOrderResponse.model_validate(updated)
 
 

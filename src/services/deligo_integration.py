@@ -307,6 +307,37 @@ def get_status_description_service(
     return None
 
 
+def push_address_update(
+    sales_id: str,
+    customer_address: str,
+    latitude: float,
+    longitude: float,
+) -> bool:
+    """Notify Deligo of an address/coordinate change via POST /api/sales/update/address.
+
+    Best-effort: logs on failure but never raises.
+    """
+    print(f"[Deligo] POST /api/sales/update/address  id={sales_id}  lat={latitude}  lng={longitude}")
+    payload = {
+        "id": sales_id,
+        "customerAddress": customer_address,
+        "customerLat": str(latitude),
+        "customerLng": str(longitude),
+    }
+    r = _post_with_retry("/api/sales/update/address", payload, use_service_auth=True)
+    if r is None or r.status_code != 200:
+        status = r.status_code if r is not None else "no response"
+        logger.warning(
+            "Deligo update/address returned %s for sales_id=%s",
+            status,
+            sales_id,
+        )
+        print(f"[Deligo] update/address failed ({status}) for sales_id={sales_id}")
+        return False
+    print(f"[Deligo] update/address OK for sales_id={sales_id}")
+    return True
+
+
 def structure_sales_detail(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize the raw /api/sales/get payload and attach status info."""
     wfm_raw = raw.get("wfm_status_id")
