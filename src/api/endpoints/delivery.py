@@ -20,6 +20,7 @@ from src.api.auth_utils import require_api_key
 from src.dependencies import get_delivery_repository
 from src.repositories.delivery import DeliveryRepository
 from src.services.delivery import (
+    _build_tracking_url,
     complete_delivery,
     create_delivery,
     get_delivery,
@@ -90,7 +91,11 @@ def _route_position(detail: dict) -> Optional[int]:
     )
 
 
-def _upsert_local_delivery_from_detail(repo: DeliveryRepository, detail: dict) -> Optional[DeliveryOrder]:
+def _upsert_local_delivery_from_detail(
+    repo: DeliveryRepository,
+    detail: dict,
+    driver_id: Optional[str] = None,
+) -> Optional[DeliveryOrder]:
     sales_number = _as_str(detail.get("sales_number"))
     if not sales_number:
         return None
@@ -98,6 +103,7 @@ def _upsert_local_delivery_from_detail(repo: DeliveryRepository, detail: dict) -
     sales_id = _as_str(detail.get("sales_id"))
     store_id = _as_str(detail.get("store_id")) or "unknown"
     company_id = _as_str(detail.get("company_id"))
+    resolved_driver_id = driver_id or _as_str(detail.get("driver_id"))
     customer_address = (
         _as_str(detail.get("customer_address"))
         or _as_str(detail.get("address"))
@@ -112,9 +118,12 @@ def _upsert_local_delivery_from_detail(repo: DeliveryRepository, detail: dict) -
             sales_id=sales_id,
             store_id=store_id,
             company_id=company_id,
+            driver_id=resolved_driver_id,
             customer_address=customer_address,
             customer_location=customer_location,
+            tracking_url=_build_tracking_url(sales_number),
             map_status="pending",
+            status="active",
         )
         return repo.create(created)
 
@@ -125,6 +134,8 @@ def _upsert_local_delivery_from_detail(repo: DeliveryRepository, detail: dict) -
         patch["store_id"] = store_id
     if not existing.company_id and company_id:
         patch["company_id"] = company_id
+    if not existing.driver_id and resolved_driver_id:
+        patch["driver_id"] = resolved_driver_id
     if (not existing.customer_address or existing.customer_address == "Address not provided") and customer_address:
         patch["customer_address"] = customer_address
     if existing.customer_location is None and customer_location is not None:
@@ -436,13 +447,21 @@ async def get_driver_deliveries(
             if sales_number in deleted_numbers:
                 continue
             if sales_number not in local_rows:
-                created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number])
+                created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
                 if created is not None:
                     local_rows[sales_number] = created
             else:
-                refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number])
+                refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
                 if refreshed is not None:
                     local_rows[sales_number] = refreshed
+
+        # Sync active/inactive status based on wfm_status_id.
+        _ACTIVE_WFM_STATUSES = {1, 5, 8}
+        active_sns = {
+            sn for sn, d in details_by_number.items()
+            if _as_int(d.get("wfm_status_id")) in _ACTIVE_WFM_STATUSES
+        }
+        repo.sync_driver_active_status(driver_id, active_sns)
 
         response: list[DeliveryOrderResponse] = []
         for sales_number in sales_numbers:
