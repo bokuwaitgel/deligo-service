@@ -104,6 +104,8 @@ class OrderListRequest(BaseModel):
     offset: int = 0
     page_size: int = Field(default=50, ge=1, le=200)
     scope_id: str | None = None
+    include_detail: bool = False
+    include_status_desc: bool = False
 
 
 class DriverOrderSortRequest(BaseModel):
@@ -148,6 +150,8 @@ def _enrich_with_detail_and_location(
     repo: DeliveryRepository,
     scope_driver_id: str | None = None,
     scope_company_id: str | None = None,
+    include_detail: bool = True,
+    include_status_desc: bool = False,
 ) -> List[Dict[str, Any]]:
     """For each item in the Deligo list:
     1. Fetch full detail (items, status, etc.) via get_sales_detail.
@@ -174,14 +178,14 @@ def _enrich_with_detail_and_location(
 
         merged = {**item}
         sales_id = _as_str(merged.get("sales_id"))
-        if sales_id:
+        if include_detail and sales_id:
             detail = sales_detail(sales_id)
             if detail:
                 merged = {**merged, **detail}
 
             # Driver-only statuses can carry a courier note + image proof.
             wfm_status_id = _as_int(merged.get("wfm_status_id"))
-            if wfm_status_id in _DRIVER_ONLY_WITH_PROOF:
+            if include_status_desc and wfm_status_id in _DRIVER_ONLY_WITH_PROOF:
                 try:
                     status_desc = get_status_description(token, sales_id, status_id=wfm_status_id)
                     if isinstance(status_desc, dict):
@@ -322,7 +326,12 @@ def driver_orders_endpoint(
         items: List[Dict[str, Any]] = driver_orders(
             token, driver_id, offset=payload.offset, page_size=payload.page_size
         )
-        items = _enrich_with_detail_and_location(token, items, repo, scope_driver_id=driver_id)
+        items = _enrich_with_detail_and_location(
+            token, items, repo,
+            scope_driver_id=driver_id,
+            include_detail=payload.include_detail,
+            include_status_desc=payload.include_status_desc,
+        )
 
         # Only statuses that represent an open/in-progress order are active.
         # 1=Шинэ, 5=Хуваарилсан, 8=Жолооч хүлээн авсан
@@ -434,4 +443,20 @@ def get_status_description_endpoint(
         raise _handle_deligo_error(exc) from exc
     if data is None:
         raise HTTPException(status_code=404, detail="No status description found")
+    return {"status": "ok", "data": data}
+
+
+@router.get("/orders/detail/{sales_id}")
+def get_order_detail_endpoint(
+    sales_id: str,
+    token: str = Depends(get_bearer_token),
+):
+    """Fetch full Deligo detail for a single order on demand (items, status, etc.)."""
+    _require_token(token)
+    try:
+        data = sales_detail(sales_id)
+    except DeligoApiError as exc:
+        raise _handle_deligo_error(exc) from exc
+    if data is None:
+        raise HTTPException(status_code=404, detail="Order detail not found")
     return {"status": "ok", "data": data}
