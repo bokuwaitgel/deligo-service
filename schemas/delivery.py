@@ -84,6 +84,7 @@ class DeliveryOrderResponse(BaseModel):
     company_id: Optional[str] = None
     customer_address: str
     customer_location: Optional[Location] = None
+    status: Optional[str] = None
     map_status: MapStatus
     detail: Optional[dict] = None  # Merged order detail from deligo integration
     tracking_url: Optional[str] = None

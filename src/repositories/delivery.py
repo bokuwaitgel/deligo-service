@@ -163,3 +163,23 @@ class DeliveryRepository:
                     )
                 )
         return query.limit(limit + 1).all()
+
+    def get_active_driver_summary(self) -> List[Dict[str, Any]]:
+        """Return one row per driver that currently has active (non-deleted) deliveries.
+
+        Each row: { driver_id, active_count }
+        """
+        rows = (
+            self.db_session.query(
+                DeliveryOrder.driver_id,
+                func.count(DeliveryOrder.sales_number).label("active_count"),
+            )
+            .filter(
+                DeliveryOrder.driver_id.isnot(None),
+                DeliveryOrder.status == "active",
+                DeliveryOrder.map_status != "deleted",
+            )
+            .group_by(DeliveryOrder.driver_id)
+            .all()
+        )
+        return [{"driver_id": r.driver_id, "active_count": r.active_count} for r in rows]

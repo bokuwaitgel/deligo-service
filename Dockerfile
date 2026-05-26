@@ -32,9 +32,10 @@ COPY --from=builder /install /usr/local
 COPY . .
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    WORKERS=1
 
 EXPOSE 8000
 
 # Run migrations then start the server
-CMD ["python", "run.py"]
+CMD python run.py --workers ${WORKERS}

@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from schemas.delivery import (
     AddressUpdateRequest,
@@ -111,12 +112,15 @@ def _upsert_local_delivery_from_detail(
         or "Address not provided"
     )
     customer_location = _extract_customer_location(detail)
-    # Geocode if no lat/lng available from Deligo API.
-    if customer_location is None and customer_address and customer_address != "Address not provided":
-        is_countryside = bool(detail.get("is_country") in {1, True, "1", "true"})
-        customer_location = _geocode(customer_address, is_countryside=is_countryside)
 
     existing = repo.get_by_sales_number(sales_number)
+
+    # Geocode only if Deligo API gave no coordinates AND DB has no location yet.
+    if customer_location is None and customer_address and customer_address != "Address not provided":
+        if existing is None or existing.customer_location is None:
+            is_countryside = bool(detail.get("is_country") in {1, True, "1", "true"})
+            customer_location = _geocode(customer_address, is_countryside=is_countryside)
+
     if existing is None:
         created = DeliveryOrder(
             sales_number=sales_number,
@@ -130,7 +134,15 @@ def _upsert_local_delivery_from_detail(
             map_status="pending",
             status="active",
         )
-        return repo.create(created)
+        try:
+            return repo.create(created)
+        except IntegrityError:
+            # Row was inserted concurrently (or hidden from the earlier bulk fetch by
+            # a stale session). Recover instead of 500-ing — re-fetch and patch below.
+            repo.db_session.rollback()
+            existing = repo.get_by_sales_number(sales_number)
+            if existing is None:
+                raise
 
     patch: dict[str, object] = {}
     if not existing.sales_id and sales_id:
@@ -139,7 +151,8 @@ def _upsert_local_delivery_from_detail(
         patch["store_id"] = store_id
     if not existing.company_id and company_id:
         patch["company_id"] = company_id
-    if not existing.driver_id and resolved_driver_id:
+    # Deligo is source of truth for driver assignment — overwrite on reassignment.
+    if resolved_driver_id and existing.driver_id != resolved_driver_id:
         patch["driver_id"] = resolved_driver_id
     if (not existing.customer_address or existing.customer_address == "Address not provided") and customer_address:
         patch["customer_address"] = customer_address
@@ -173,7 +186,48 @@ async def create_delivery_order(
     except Exception as e:
         logger.error(f"Error creating delivery order: {e}")
         raise HTTPException(status_code=500, detail="Failed to create delivery order")
-    
+
+
+@router.get("/active-drivers", dependencies=[Depends(require_api_key)])
+async def get_active_drivers(
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Return drivers that currently have active deliveries, joined with their last known location.
+
+    Response: list of { driver_id, active_count, latitude?, longitude?, location_updated_at? }
+    Used by the admin panel to build the driver sidebar without fetching every driver's orders.
+    """
+    from schemas.database.driver_location_db import DriverLocationDB
+
+    try:
+        summaries = repo.get_active_driver_summary()
+        if not summaries:
+            return []
+
+        driver_ids = [s["driver_id"] for s in summaries]
+        loc_rows: list[DriverLocationDB] = (
+            repo.db_session.query(DriverLocationDB)  # type: ignore[attr-defined]
+            .filter(DriverLocationDB.driver_id.in_(driver_ids))
+            .all()
+        )
+        loc_map = {r.driver_id: r for r in loc_rows}
+
+        result = []
+        for s in summaries:
+            loc = loc_map.get(s["driver_id"])
+            result.append({
+                "driver_id": s["driver_id"],
+                "active_count": s["active_count"],
+                "latitude": loc.latitude if loc else None,
+                "longitude": loc.longitude if loc else None,
+                "location_updated_at": loc.updated_at.isoformat() if loc else None,
+            })
+        return result
+    except Exception as e:
+        logger.error("Error fetching active drivers: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to fetch active drivers")
+
+
 @router.get("/{sales_number}", response_model=DeliveryOrderResponse)
 async def get_delivery_order(
     sales_number: str,
@@ -459,14 +513,22 @@ async def get_driver_deliveries(
         for sales_number in sales_numbers:
             if sales_number in deleted_numbers:
                 continue
-            if sales_number not in local_rows:
+            existing = local_rows.get(sales_number)
+            if existing is None:
+                # New order — always upsert (may geocode).
                 created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
                 if created is not None:
                     local_rows[sales_number] = created
             else:
-                refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
-                if refreshed is not None:
-                    local_rows[sales_number] = refreshed
+                # Existing order — only patch if something meaningful is missing.
+                needs_patch = (
+                    (not existing.driver_id and driver_id) or
+                    existing.customer_location is None
+                )
+                if needs_patch:
+                    refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
+                    if refreshed is not None:
+                        local_rows[sales_number] = refreshed
 
         # Sync active/inactive status based on wfm_status_id.
         _ACTIVE_WFM_STATUSES = {1, 5, 8}
@@ -485,7 +547,7 @@ async def get_driver_deliveries(
             item = item.model_copy(update={"detail": details_by_number[sales_number]})
             response.append(item)
         response.sort(key=lambda r: (r.sort_order is None, r.sort_order if r.sort_order is not None else 0))
-        return response
+        return [r for r in response if r.status == "active"]
     except HTTPException:
         raise
     except Exception as e:

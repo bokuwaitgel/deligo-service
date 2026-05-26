@@ -152,6 +152,7 @@ def _enrich_with_detail_and_location(
     scope_company_id: str | None = None,
     include_detail: bool = True,
     include_status_desc: bool = False,
+    geocode_new: bool = True,
 ) -> List[Dict[str, Any]]:
     """For each item in the Deligo list:
     1. Fetch full detail (items, status, etc.) via get_sales_detail.
@@ -220,7 +221,7 @@ def _enrich_with_detail_and_location(
 
             if local.customer_location:
                 merged["customer_location"] = local.customer_location
-        else:
+        elif geocode_new:
             driver_id_val = scope_driver_id or _as_str(item.get("driver_id"))
             sort_order = None
             if driver_id_val:
@@ -395,7 +396,13 @@ def shop_orders_endpoint(
         items: List[Dict[str, Any]] = shop_orders(
             token, company_id, offset=payload.offset, page_size=payload.page_size
         )
-        items = _enrich_with_detail_and_location(token, items, repo, scope_company_id=company_id)
+        items = _enrich_with_detail_and_location(
+            token, items, repo,
+            scope_company_id=company_id,
+            include_detail=payload.include_detail,
+            include_status_desc=payload.include_status_desc,
+            geocode_new=False,
+        )
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
     return {"status": "ok", "data": items, "scope_id": company_id}
