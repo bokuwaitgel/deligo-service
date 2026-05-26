@@ -380,6 +380,14 @@ async def track_delivery_order(
         if detail:
             delivery_order.detail = detail  # type: ignore[attr-defined]
 
+        # If location is missing, geocode and persist it now.
+        if delivery_order.customer_location is None and delivery_order.customer_address and delivery_order.customer_address != "Address not provided":
+            is_countryside = bool((detail or {}).get("is_country") in {1, True, "1", "true"})
+            geocoded = _geocode(delivery_order.customer_address, is_countryside=is_countryside)
+            if geocoded:
+                repo.update_partial(sales_number, {"customer_location": geocoded})
+                delivery_order = delivery_order.model_copy(update={"customer_location": geocoded})
+
         # For driver-only sub-statuses fetch the saved proof (text + image) so the
         # customer can see why the delivery wasn't completed on this attempt.
         _DRIVER_ONLY_WITH_PROOF = {13, 14, 15, 16, 17, 23}
