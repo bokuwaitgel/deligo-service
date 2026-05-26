@@ -91,5 +91,6 @@ class DeliveryOrderResponse(BaseModel):
     deliveries_before_mine: Optional[int] = None
     driver_current_order_index: Optional[int] = None
     eta_minutes: Optional[int] = None
+    sort_order: Optional[int] = None
     created_at: datetime
     updated_at: datetime

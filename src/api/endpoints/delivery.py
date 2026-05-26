@@ -82,15 +82,6 @@ def _as_int(value: object) -> Optional[int]:
         return None
 
 
-def _is_open_queue_status(detail: dict) -> bool:
-    status_id = _as_int(detail.get("wfm_status_id"))
-    if status_id is not None:
-        return status_id in (5, 8)
-
-    status_code = _as_str(detail.get("status_code"))
-    return status_code in ("salesDelivery", "salesDriverDone")
-
-
 def _route_position(detail: dict) -> Optional[int]:
     return (
         _as_int(detail.get("route_number"))
@@ -387,75 +378,20 @@ async def track_delivery_order(
             except Exception as _sd_err:
                 logger.warning("Failed to fetch status description for tracking: %s", _sd_err)
 
-        # Deligo /sales/get can sometimes omit driver_id; use local fallback so
-        # tracking counters don't stay null.
+        # Use local DeliveryOrder as source of truth for queue position and active count.
+        # sort_order (1-indexed) is the driver's confirmed delivery sequence.
         driver_id = _as_str((detail or {}).get("driver_id")) or _as_str(getattr(delivery_order, "driver_id", None))
+        if delivery_order.sort_order is not None:
+            delivery_order.deliveries_before_mine = delivery_order.sort_order - 1
         if driver_id is not None:
-                driver_sales = get_driver_sales(str(driver_id), page_size=200, use_service_auth=True)
-                logger.info(f"[Track] Driver {driver_id} total sales: {len(driver_sales)}")
-                
-                # Structure each sale to ensure status_code is present
-                structured_sales = [structure_sales_detail(s) for s in driver_sales]
-                
-                for s in structured_sales:
-                    status_id = _as_int(s.get("wfm_status_id"))
-                    status_code = _as_str(s.get("status_code"))
-                    sn = _as_str(s.get("sales_number"))
-                    logger.info(f"  Sales {sn}: wfm_status_id={status_id}, status_code={status_code}, open={_is_open_queue_status(s)}")
-                
-                queue_sales = [s for s in structured_sales if _is_open_queue_status(s)]
-                logger.info(f"[Track] Open queue sales count: {len(queue_sales)}")
-
-                # Sort using driver's saved sort_order from local DB — this is the source of truth,
-                # consistent with what the driver sees in their view.
-                queue_sales_numbers = [_as_str(s.get("sales_number")) for s in queue_sales]
-                local_rows_for_driver = {
-                    row.sales_number: row
-                    for row in repo.get_by_sales_numbers([sn for sn in queue_sales_numbers if sn])
-                }
-
-                def _sort_key(pair: tuple) -> tuple:
-                    original_idx, sale = pair
-                    sn = _as_str(sale.get("sales_number")) or ""
-                    local = local_rows_for_driver.get(sn)
-                    so = local.sort_order if local and local.sort_order is not None else None
-                    return (so is None, so if so is not None else 10**9, original_idx)
-
-                indexed_queue_sales = sorted(enumerate(queue_sales), key=_sort_key)
-                queue_sales = [sale for _, sale in indexed_queue_sales]
-
-                delivery_order.active_deliveries_count = len(queue_sales)
-                logger.info(f"[Track] Setting active_deliveries_count: {delivery_order.active_deliveries_count}")
-
-                my_sales_number = _as_str((detail or {}).get("sales_number")) or _as_str(delivery_order.sales_number)
-                my_sales_id = _as_str((detail or {}).get("sales_id")) or _as_str(delivery_order.sales_id)
-
-                my_index: Optional[int] = None
-                current_driver_index: Optional[int] = None
-
-                for idx, sale in enumerate(queue_sales):
-                    sale_sales_number = _as_str(sale.get("sales_number"))
-                    sale_sales_id = _as_str(sale.get("sales_id"))
-                    sale_status_id = _as_int(sale.get("wfm_status_id"))
-
-                    if (
-                        my_index is None
-                        and (
-                            (my_sales_number and sale_sales_number == my_sales_number)
-                            or (my_sales_id and sale_sales_id == my_sales_id)
-                        )
-                    ):
-                        my_index = idx
-
-                    # Driver's current active stop is wfm_status_id=8.
-                    if current_driver_index is None and sale_status_id == 8:
-                        current_driver_index = idx
-
-                if current_driver_index is None and queue_sales:
-                    current_driver_index = 0
-
-                delivery_order.deliveries_before_mine = my_index
-                delivery_order.driver_current_order_index = current_driver_index
+            active_rows = repo.get_active_by_driver_id(driver_id)
+            delivery_order.active_deliveries_count = len(active_rows)
+        logger.info(
+            "[Track] sort_order=%s deliveries_before_mine=%s active_deliveries_count=%s",
+            delivery_order.sort_order,
+            delivery_order.deliveries_before_mine,
+            delivery_order.active_deliveries_count,
+        )
         return delivery_order
     except HTTPException:
         raise
@@ -516,6 +452,7 @@ async def get_driver_deliveries(
             item = DeliveryOrderResponse.model_validate(local)
             item = item.model_copy(update={"detail": details_by_number[sales_number]})
             response.append(item)
+        response.sort(key=lambda r: (r.sort_order is None, r.sort_order if r.sort_order is not None else 0))
         return response
     except HTTPException:
         raise

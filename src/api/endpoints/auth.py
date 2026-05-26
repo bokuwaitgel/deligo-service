@@ -323,6 +323,17 @@ def driver_orders_endpoint(
             token, driver_id, offset=payload.offset, page_size=payload.page_size
         )
         items = _enrich_with_detail_and_location(token, items, repo, scope_driver_id=driver_id)
+
+        # Only statuses that represent an open/in-progress order are active.
+        # 1=Шинэ, 5=Хуваарилсан, 8=Жолооч хүлээн авсан
+        _ACTIVE_WFM_STATUSES = {1, 5, 8}
+        active_sns: set = {
+            str(it["sales_number"])
+            for it in items
+            if it.get("sales_number") and _as_int(it.get("wfm_status_id")) in _ACTIVE_WFM_STATUSES
+        }
+        repo.sync_driver_active_status(driver_id, active_sns)
+
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
     return {"status": "ok", "data": items, "scope_id": driver_id}

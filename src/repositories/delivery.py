@@ -105,6 +105,42 @@ class DeliveryRepository:
 
         return len(rows_by_sales_number)
 
+    def get_active_by_driver_id(self, driver_id: str) -> List[DeliveryOrder]:
+        """Return all status='active' rows for a driver (excluding deleted map entries)."""
+        return (
+            self.db_session.query(DeliveryOrder)
+            .filter(
+                DeliveryOrder.driver_id == driver_id,
+                DeliveryOrder.status == 'active',
+                DeliveryOrder.map_status != 'deleted',
+            )
+            .all()
+        )
+
+    def sync_driver_active_status(self, driver_id: str, active_sales_numbers: set) -> None:
+        """After a Deligo sync: mark rows in active_sales_numbers as 'active',
+        mark all other rows for this driver as 'inactive'."""
+        rows = (
+            self.db_session.query(DeliveryOrder)
+            .filter(
+                DeliveryOrder.driver_id == driver_id,
+                DeliveryOrder.map_status != 'deleted',
+            )
+            .all()
+        )
+        changed = False
+        for row in rows:
+            desired = 'active' if row.sales_number in active_sales_numbers else 'inactive'
+            if row.status != desired:
+                row.status = desired
+                changed = True
+        if changed:
+            self.db_session.commit()
+        logger.debug(
+            "sync_driver_active_status: driver=%s active=%d total_rows=%d",
+            driver_id, len(active_sales_numbers), len(rows),
+        )
+
     def get_by_shop_id_paginated(
         self, store_id: str, cursor: Optional[str], limit: int
     ) -> List[DeliveryOrder]:
