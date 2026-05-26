@@ -21,6 +21,7 @@ from src.dependencies import get_delivery_repository
 from src.repositories.delivery import DeliveryRepository
 from src.services.delivery import (
     _build_tracking_url,
+    _geocode,
     complete_delivery,
     create_delivery,
     get_delivery,
@@ -110,6 +111,10 @@ def _upsert_local_delivery_from_detail(
         or "Address not provided"
     )
     customer_location = _extract_customer_location(detail)
+    # Geocode if no lat/lng available from Deligo API.
+    if customer_location is None and customer_address and customer_address != "Address not provided":
+        is_countryside = bool(detail.get("is_country") in {1, True, "1", "true"})
+        customer_location = _geocode(customer_address, is_countryside=is_countryside)
 
     existing = repo.get_by_sales_number(sales_number)
     if existing is None:
