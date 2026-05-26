@@ -62,6 +62,11 @@ STATUS_LABEL_MAP: Dict[int, str] = {
 # Statuses that represent a terminal / closed state.
 _CLOSED_STATUS_IDS = {3, 12, 23}
 
+# Statuses that represent an open / in-progress order for a driver.
+# 1=Шинэ, 5=Хуваарилсан, 8=Жолооч хүлээн авсан
+ACTIVE_WFM_STATUS_IDS = {1, 5, 8}
+ACTIVE_STATUS_CODES = {STATUS_CODE_MAP[i] for i in ACTIVE_WFM_STATUS_IDS}
+
 
 class _TokenCache:
     token: Optional[str] = None

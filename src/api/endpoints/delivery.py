@@ -29,7 +29,7 @@ from src.services.delivery import (
     update_location,
     update_location_by_address,
 )
-from src.services.deligo_integration import change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
+from src.services.deligo_integration import ACTIVE_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.middleware_order import get_orders_by_sales_numbers
 
 logger = logging.getLogger(__name__)
@@ -132,7 +132,6 @@ def _upsert_local_delivery_from_detail(
             customer_location=customer_location,
             tracking_url=_build_tracking_url(sales_number),
             map_status="pending",
-            status="active",
         )
         try:
             return repo.create(created)
@@ -530,13 +529,12 @@ async def get_driver_deliveries(
                     if refreshed is not None:
                         local_rows[sales_number] = refreshed
 
-        # Sync active/inactive status based on wfm_status_id.
-        _ACTIVE_WFM_STATUSES = {1, 5, 8}
-        active_sns = {
-            sn for sn, d in details_by_number.items()
-            if _as_int(d.get("wfm_status_id")) in _ACTIVE_WFM_STATUSES
+        # Persist sync membership + latest WFM status code per sales_number.
+        status_by_sn: dict[str, Optional[str]] = {
+            sn: d.get("status_code") for sn, d in details_by_number.items()
         }
-        repo.sync_driver_active_status(driver_id, active_sns)
+        active_sns: set[str] = set(status_by_sn.keys())
+        repo.sync_driver_active_status(driver_id, active_sns, status_by_sn)
 
         response: list[DeliveryOrderResponse] = []
         for sales_number in sales_numbers:
@@ -546,8 +544,12 @@ async def get_driver_deliveries(
             item = DeliveryOrderResponse.model_validate(local)
             item = item.model_copy(update={"detail": details_by_number[sales_number]})
             response.append(item)
-        response.sort(key=lambda r: (r.sort_order is None, r.sort_order if r.sort_order is not None else 0))
-        return [r for r in response if r.status == "active"]
+        response.sort(key=lambda r: (
+            r.status in ACTIVE_STATUS_CODES,
+            r.sort_order is None,
+            r.sort_order if r.sort_order is not None else 0,
+        ))
+        return [r for r in response if r.sync_active]
     except HTTPException:
         raise
     except Exception as e:

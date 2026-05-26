@@ -7,6 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from schemas.database.delivery_db import DeliveryOrder
+from src.services.deligo_integration import ACTIVE_STATUS_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -106,20 +107,35 @@ class DeliveryRepository:
         return len(rows_by_sales_number)
 
     def get_active_by_driver_id(self, driver_id: str) -> List[DeliveryOrder]:
-        """Return all status='active' rows for a driver (excluding deleted map entries)."""
+        """Return in-progress rows for a driver: in the driver's current sync AND
+        the WFM status code marks the order as open/in-progress."""
         return (
             self.db_session.query(DeliveryOrder)
             .filter(
                 DeliveryOrder.driver_id == driver_id,
-                DeliveryOrder.status == 'active',
+                DeliveryOrder.sync_active.is_(True),
+                DeliveryOrder.status.in_(ACTIVE_STATUS_CODES),
                 DeliveryOrder.map_status != 'deleted',
             )
             .all()
         )
 
-    def sync_driver_active_status(self, driver_id: str, active_sales_numbers: set) -> None:
-        """After a Deligo sync: mark rows in active_sales_numbers as 'active',
-        mark all other rows for this driver as 'inactive'."""
+    def sync_driver_active_status(
+        self,
+        driver_id: str,
+        active_sales_numbers: set,
+        status_by_sn: Dict[str, Optional[str]],
+    ) -> None:
+        """After a Deligo sync: set sync_active for each row, and persist the
+        latest WFM status code returned for it.
+
+        - sync_active = True iff the row's sales_number is in active_sales_numbers
+          (i.e. it's still on the driver's list in the latest Deligo response,
+          regardless of WFM status).
+        - status = status_by_sn[sales_number] when present (the latest WFM status
+          code from Deligo, e.g. "salesDelivery"). Rows not in the dict keep their
+          previous status (the order is no longer in the driver's sync).
+        """
         rows = (
             self.db_session.query(DeliveryOrder)
             .filter(
@@ -130,10 +146,15 @@ class DeliveryRepository:
         )
         changed = False
         for row in rows:
-            desired = 'active' if row.sales_number in active_sales_numbers else 'inactive'
-            if row.status != desired:
-                row.status = desired
+            desired_active = row.sales_number in active_sales_numbers
+            if row.sync_active != desired_active:
+                row.sync_active = desired_active
                 changed = True
+            if row.sales_number in status_by_sn:
+                desired_status = status_by_sn[row.sales_number]
+                if row.status != desired_status:
+                    row.status = desired_status
+                    changed = True
         if changed:
             self.db_session.commit()
         logger.debug(
@@ -176,7 +197,8 @@ class DeliveryRepository:
             )
             .filter(
                 DeliveryOrder.driver_id.isnot(None),
-                DeliveryOrder.status == "active",
+                DeliveryOrder.sync_active.is_(True),
+                DeliveryOrder.status.in_(ACTIVE_STATUS_CODES),
                 DeliveryOrder.map_status != "deleted",
             )
             .group_by(DeliveryOrder.driver_id)

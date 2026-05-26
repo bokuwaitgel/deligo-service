@@ -21,7 +21,8 @@ class DeliveryOrder(Base):
     eta_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     customer_address: Mapped[str] = mapped_column(Text, nullable=False)
     customer_location: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
-    status: Mapped[Optional[str]] = mapped_column(String, default='active', nullable=True)
+    sync_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     map_status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
     tracking_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

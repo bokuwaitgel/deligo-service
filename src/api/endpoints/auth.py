@@ -25,6 +25,7 @@ from src.services.deligo_user_proxy import (
     shop_orders,
     user_info,
 )
+from src.services.deligo_integration import STATUS_CODE_MAP
 from src.services.delivery import _geocode, _build_tracking_url
 
 logger = logging.getLogger(__name__)
@@ -334,15 +335,19 @@ def driver_orders_endpoint(
             include_status_desc=payload.include_status_desc,
         )
 
-        # Only statuses that represent an open/in-progress order are active.
-        # 1=Шинэ, 5=Хуваарилсан, 8=Жолооч хүлээн авсан
-        _ACTIVE_WFM_STATUSES = {1, 5, 8}
-        active_sns: set = {
-            str(it["sales_number"])
-            for it in items
-            if it.get("sales_number") and _as_int(it.get("wfm_status_id")) in _ACTIVE_WFM_STATUSES
-        }
-        repo.sync_driver_active_status(driver_id, active_sns)
+        # Persist sync membership (any order in the driver's list) + latest WFM
+        # status code. The "open/in-progress" filter is applied at read time
+        # against the status column, not here.
+        status_by_sn: Dict[str, Optional[str]] = {}
+        for it in items:
+            sn = it.get("sales_number")
+            if not sn:
+                continue
+            sn_str = str(sn)
+            wfm_id = _as_int(it.get("wfm_status_id"))
+            status_by_sn[sn_str] = STATUS_CODE_MAP.get(wfm_id) if wfm_id is not None else None
+        active_sns: set = set(status_by_sn.keys())
+        repo.sync_driver_active_status(driver_id, active_sns, status_by_sn)
 
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
