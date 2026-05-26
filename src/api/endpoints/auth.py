@@ -31,12 +31,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+_DRIVER_ONLY_WITH_PROOF = {12, 13, 14, 15, 16, 17, 23}
+
 
 def _as_str(value: object) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _as_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _extract_customer_location(item: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -167,6 +178,20 @@ def _enrich_with_detail_and_location(
             detail = sales_detail(sales_id)
             if detail:
                 merged = {**merged, **detail}
+
+            # Driver-only statuses can carry a courier note + image proof.
+            wfm_status_id = _as_int(merged.get("wfm_status_id"))
+            if wfm_status_id in _DRIVER_ONLY_WITH_PROOF:
+                try:
+                    status_desc = get_status_description(token, sales_id, status_id=wfm_status_id)
+                    if isinstance(status_desc, dict):
+                        has_description = bool(_as_str(status_desc.get("description")))
+                        has_file = bool(_as_str(status_desc.get("file_path")))
+                        if has_description or has_file:
+                            merged["status_description"] = status_desc
+                except DeligoApiError:
+                    # Best-effort enrichment; don't fail order listing if proof fetch fails.
+                    pass
 
         local = local_rows.get(sales_number)
 

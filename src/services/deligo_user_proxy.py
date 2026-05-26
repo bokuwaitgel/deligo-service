@@ -124,6 +124,30 @@ def sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _normalize_status_description(data: Dict[str, Any]) -> Dict[str, Any]:
+    # Deligo has returned multiple key shapes over time; normalize to stable keys.
+    description = (
+        data.get("description")
+        or data.get("statusDescription")
+        or data.get("status_description")
+        or data.get("statusDescriptionText")
+        or data.get("note")
+        or data.get("comment")
+        or data.get("reason")
+    )
+    file_path = (
+        data.get("file_path")
+        or data.get("filePath")
+        or data.get("imageUrl")
+        or data.get("image")
+        or data.get("photo")
+    )
+    return {
+        "description": str(description).strip() if description is not None else None,
+        "file_path": str(file_path).strip() if file_path is not None else None,
+    }
+
+
 def get_status_description(token: str, sales_id: str, status_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """Fetch the latest status description for a sales record."""
     payload: Dict[str, Any] = {"id": sales_id}
@@ -134,7 +158,7 @@ def get_status_description(token: str, sales_id: str, status_id: Optional[int] =
         data = body.get("data")
         print(f"[Deligo] getStatusDescription for sales_id={sales_id} status_id={status_id} response data keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
         if isinstance(data, dict):
-            return data
+            return _normalize_status_description(data)
     return None
 
 
