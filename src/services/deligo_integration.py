@@ -19,7 +19,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -60,12 +61,43 @@ STATUS_LABEL_MAP: Dict[int, str] = {
 }
 
 # Statuses that represent a terminal / closed state.
-_CLOSED_STATUS_IDS = {3, 12, 23}
+# 3=Хүргэсэн (delivered), 12=Авахаа больсон (cancelled), 23=Сольж авсан (exchanged)
+CLOSED_WFM_STATUS_IDS = {3, 12, 23}
+_CLOSED_STATUS_IDS = CLOSED_WFM_STATUS_IDS  # kept for in-module backwards compat
 
 # Statuses that represent an open / in-progress order for a driver.
 # 1=Шинэ, 5=Хуваарилсан, 8=Жолооч хүлээн авсан
 ACTIVE_WFM_STATUS_IDS = {1, 5, 8}
 ACTIVE_STATUS_CODES = {STATUS_CODE_MAP[i] for i in ACTIVE_WFM_STATUS_IDS}
+
+# ---------------------------------------------------------------------------
+# In-process TTL cache for /api/sales/get results.
+# Avoids N round-trips when the same order is fetched multiple times within
+# a short window (e.g. driver list refresh hitting 20-30 orders each time).
+# ---------------------------------------------------------------------------
+_DETAIL_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_DETAIL_CACHE_TTL = int(os.getenv("DELIGO_DETAIL_CACHE_TTL", "300"))  # seconds; 0 = disabled
+_DETAIL_CACHE_MAX = 2000
+
+
+def _get_cached_detail(sales_id: str) -> Optional[Dict[str, Any]]:
+    if not _DETAIL_CACHE_TTL:
+        return None
+    entry = _DETAIL_CACHE.get(sales_id)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    return None
+
+
+def _set_cached_detail(sales_id: str, detail: Dict[str, Any]) -> None:
+    if not _DETAIL_CACHE_TTL:
+        return
+    if len(_DETAIL_CACHE) >= _DETAIL_CACHE_MAX:
+        now = time.time()
+        expired = [k for k, (exp, _) in _DETAIL_CACHE.items() if exp < now]
+        for k in expired or list(_DETAIL_CACHE)[:200]:
+            _DETAIL_CACHE.pop(k, None)
+    _DETAIL_CACHE[sales_id] = (time.time() + _DETAIL_CACHE_TTL, detail)
 
 
 class _TokenCache:
@@ -155,7 +187,11 @@ def get_driver_sales(
                 "value": driver_id,
                 "operator": "=",
                 "dataType": "integer",
-            }
+            },
+            "TO_CHAR(t6.created_date, 'YYYY-MM-DD')": {
+                "value": date.today().isoformat(),
+                "operator": "=",
+            },
         },
         "paging": {"offset": offset, "pageSize": page_size},
     }
@@ -243,6 +279,9 @@ def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Option
     """
     if not sales_id:
         return None
+    cached = _get_cached_detail(sales_id)
+    if cached is not None:
+        return cached
     print(f"[Deligo] POST /api/sales/get  id={sales_id}")
     r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=use_service_auth)
 
@@ -285,7 +324,9 @@ def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Option
         print(f"[Deligo] sales/get unexpected data type for id={sales_id}: {type(data)}")
         return None
     print(f"[Deligo] sales/get OK for id={sales_id}")
-    return structure_sales_detail(data)
+    result = structure_sales_detail(data)
+    _set_cached_detail(sales_id, result)
+    return result
 
 
 def get_status_description_service(

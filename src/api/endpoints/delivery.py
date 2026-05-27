@@ -30,7 +30,8 @@ from src.services.delivery import (
     update_location_by_address,
 )
 from src.services.blacklist import is_driver_blacklisted
-from src.services.deligo_integration import ACTIVE_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
+from src.services.deligo_integration import ACTIVE_STATUS_CODES, CLOSED_WFM_STATUS_IDS, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
+from src.services.geocode_quota import consume_geocode_quota
 from src.services.middleware_order import get_orders_by_sales_numbers
 
 logger = logging.getLogger(__name__)
@@ -86,14 +87,6 @@ def _as_int(value: object) -> Optional[int]:
         return None
 
 
-def _route_position(detail: dict) -> Optional[int]:
-    return (
-        _as_int(detail.get("route_number"))
-        or _as_int(detail.get("route_no"))
-        or _as_int(detail.get("sort_order"))
-    )
-
-
 def _upsert_local_delivery_from_detail(
     repo: DeliveryRepository,
     detail: dict,
@@ -117,10 +110,22 @@ def _upsert_local_delivery_from_detail(
     existing = repo.get_by_sales_number(sales_number)
 
     # Geocode only if Deligo API gave no coordinates AND DB has no location yet.
-    if customer_location is None and customer_address and customer_address != "Address not provided":
+    # Skip Google calls entirely for closed orders (delivered/cancelled/exchanged) —
+    # they don't get rendered on the map.
+    wfm_id = _as_int(detail.get("wfm_status_id"))
+    is_closed = wfm_id in CLOSED_WFM_STATUS_IDS
+    if (
+        not is_closed
+        and customer_location is None
+        and customer_address
+        and customer_address != "Address not provided"
+    ):
         if existing is None or existing.customer_location is None:
-            is_countryside = bool(detail.get("is_country") in {1, True, "1", "true"})
-            customer_location = _geocode(customer_address, is_countryside=is_countryside)
+            # DB-level cache: reuse any prior geocode for this exact address.
+            customer_location = repo.find_location_by_address(customer_address)
+            if customer_location is None and consume_geocode_quota(driver_id):
+                is_countryside = bool(detail.get("is_country") in {1, True, "1", "true"})
+                customer_location = _geocode(customer_address, is_countryside=is_countryside)
 
     if existing is None:
         created = DeliveryOrder(

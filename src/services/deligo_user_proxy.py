@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -20,6 +22,58 @@ DELIGO_API_URL = os.getenv("DELIGO_API_URL", "https://api.deligo.mn").rstrip("/"
 _HTTP_TIMEOUT_SECONDS = float(os.getenv("DELIGO_HTTP_TIMEOUT", "20"))
 _HTTP_TIMEOUT = httpx.Timeout(_HTTP_TIMEOUT_SECONDS, connect=5.0)
 _MAX_STATUS_DESCRIPTION_PARAM_LEN = int(os.getenv("DELIGO_STATUS_DESC_MAX_LEN", "180000"))
+
+# Shared TTL cache for /api/sales/get — keyed by sales_id.
+# Same TTL env var as deligo_integration so both modules stay consistent.
+_PROXY_DETAIL_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_PROXY_DETAIL_CACHE_TTL = int(os.getenv("DELIGO_DETAIL_CACHE_TTL", "300"))  # 0 = disabled
+_PROXY_DETAIL_CACHE_MAX = 2000
+
+# Short-lived cache for /api/sales/integration list responses.
+# Key: (criteria_field, value, created_date, offset, page_size)
+# 40 drivers × 960 refreshes/day → with 60s TTL this cuts to ~40 × 480 = 19,200 actual calls/day.
+_LIST_CACHE: Dict[Tuple[str, str, str, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
+_LIST_CACHE_TTL = int(os.getenv("DELIGO_LIST_CACHE_TTL", "60"))  # seconds; 0 = disabled
+
+
+def _get_list_cache(key: Tuple[str, str, str, int, int]) -> Optional[List[Dict[str, Any]]]:
+    if not _LIST_CACHE_TTL:
+        return None
+    entry = _LIST_CACHE.get(key)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    return None
+
+
+def _set_list_cache(key: Tuple[str, str, str, int, int], data: List[Dict[str, Any]]) -> None:
+    if not _LIST_CACHE_TTL:
+        return
+    if len(_LIST_CACHE) >= 500:
+        now = time.time()
+        expired = [k for k, (exp, _) in _LIST_CACHE.items() if exp < now]
+        for k in expired or list(_LIST_CACHE)[:100]:
+            _LIST_CACHE.pop(k, None)
+    _LIST_CACHE[key] = (time.time() + _LIST_CACHE_TTL, data)
+
+
+def _get_proxy_cached_detail(sales_id: str) -> Optional[Dict[str, Any]]:
+    if not _PROXY_DETAIL_CACHE_TTL:
+        return None
+    entry = _PROXY_DETAIL_CACHE.get(sales_id)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    return None
+
+
+def _set_proxy_cached_detail(sales_id: str, detail: Dict[str, Any]) -> None:
+    if not _PROXY_DETAIL_CACHE_TTL:
+        return
+    if len(_PROXY_DETAIL_CACHE) >= _PROXY_DETAIL_CACHE_MAX:
+        now = time.time()
+        expired = [k for k, (exp, _) in _PROXY_DETAIL_CACHE.items() if exp < now]
+        for k in expired or list(_PROXY_DETAIL_CACHE)[:200]:
+            _PROXY_DETAIL_CACHE.pop(k, None)
+    _PROXY_DETAIL_CACHE[sales_id] = (time.time() + _PROXY_DETAIL_CACHE_TTL, detail)
 
 
 class DeligoApiError(Exception):
@@ -74,52 +128,95 @@ def user_info(token: str) -> Dict[str, Any]:
     return body
 
 
-def _order_list(token: str, criteria_field: str, value: str, offset: int, page_size: int) -> List[Dict[str, Any]]:
+def _order_list(
+    token: str,
+    criteria_field: str,
+    value: str,
+    offset: int,
+    page_size: int,
+    created_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    criteria: Dict[str, Any] = {
+        criteria_field: {
+            "value": str(value),
+            "operator": "=",
+            "dataType": "integer",
+        }
+    }
+    if not created_date:
+        created_date = datetime.now(ZoneInfo("Asia/Ulaanbaatar")).strftime("%Y-%m-%d")
+    print(f"[Deligo] Adding created_date filter to criteria: {created_date}")
+    # Deligo expects this exact key — TO_CHAR on the SQL side normalizes the
+    # timestamp column to a YYYY-MM-DD string for equality comparison.
+    # Skip the filter entirely when no date is provided; Deligo rejects
+    # criteria entries with a null value ("must contain" error).
+    criteria["TO_CHAR(t6.created_date, 'YYYY-MM-DD')"] = {
+        "value": created_date,
+        "operator": "=",
+        }
     payload = {
-        "criteria": {
-            criteria_field: {
-                "value": str(value),
-                "operator": "=",
-                "dataType": "integer",
-            }
-        },
+        "criteria": criteria,
         "paging": {"offset": offset, "pageSize": page_size},
     }
-    print(f"[Deligo] POST /api/sales/integration  {criteria_field}={value}  offset={offset} pageSize={page_size}")
+    date_suffix = f" created_date={created_date}" if created_date else ""
+    cache_key = (criteria_field, str(value), created_date or "", offset, page_size)
+    cached_list = _get_list_cache(cache_key)
+    if cached_list is not None:
+        print(f"[Deligo] LIST CACHE HIT  {criteria_field}={value}{date_suffix}  offset={offset} pageSize={page_size}")
+        return cached_list
+    print(f"[Deligo] POST /api/sales/integration  {criteria_field}={value}{date_suffix}  offset={offset} pageSize={page_size}")
     body = _post("/api/sales/integration", json=payload, token=token)
     if isinstance(body, list):
         print(f"[Deligo] Got {len(body)} orders (list)")
+        _set_list_cache(cache_key, body)
         return body
     if isinstance(body, dict):
         for key in ("data", "items"):
             chunk = body.get(key)
             if isinstance(chunk, list):
                 print(f"[Deligo] Got {len(chunk)} orders (body.{key})")
+                _set_list_cache(cache_key, chunk)
                 return chunk
             if isinstance(chunk, dict):
                 inner = chunk.get("items") or chunk.get("data")
                 if isinstance(inner, list):
                     print(f"[Deligo] Got {len(inner)} orders (body.{key}.inner)")
+                    _set_list_cache(cache_key, inner)
                     return inner
     print(f"[Deligo] No orders found, body keys: {list(body.keys()) if isinstance(body, dict) else type(body)}")
     return []
 
 
-def driver_orders(token: str, driver_id: str, offset: int = 0, page_size: int = 50) -> List[Dict[str, Any]]:
-    return _order_list(token, "es.driver_id", driver_id, offset, page_size)
+def driver_orders(
+    token: str,
+    driver_id: str,
+    offset: int = 0,
+    page_size: int = 50,
+    created_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    return _order_list(token, "es.driver_id", driver_id, offset, page_size, created_date=created_date)
 
 
-def shop_orders(token: str, company_id: str, offset: int = 0, page_size: int = 50) -> List[Dict[str, Any]]:
-    return _order_list(token, "es.company_id", company_id, offset, page_size)
+def shop_orders(
+    token: str,
+    company_id: str,
+    offset: int = 0,
+    page_size: int = 50,
+    created_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    return _order_list(token, "es.company_id", company_id, offset, page_size, created_date=created_date)
 
 
 def sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:
     # sales/get is intentionally called without Authorization header.
+    cached = _get_proxy_cached_detail(sales_id)
+    if cached is not None:
+        return cached
     body = _post("/api/sales/get", json={"id": sales_id}, token=None)
-
     if isinstance(body, dict):
         data = body.get("data")
         if isinstance(data, dict):
+            _set_proxy_cached_detail(sales_id, data)
             return data
     return None
 

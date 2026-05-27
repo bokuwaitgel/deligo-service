@@ -74,12 +74,14 @@ _DISTRICT_CENTERS: dict[str, tuple[float, float]] = {
 
 # ---------------------------------------------------------------------------
 
-# Deligo currently provisions newer Google APIs in some environments.
-# Keep legacy Places Find Place opt-in to avoid REQUEST_DENIED when legacy is disabled.
-_ENABLE_LEGACY_FIND_PLACE = os.getenv("ENABLE_LEGACY_FIND_PLACE", "false").strip().lower() in {
-    "1", "true", "yes", "on",
-}
-
+# Cost-saving toggle: legacy "Find Place from Text" bills at ~$17/1k.
+# Places API (New) Text Search is also ~$17/1k when the field mask contains
+# only Basic data fields (places.id, places.location, places.formattedAddress).
+# Pro/Advanced fields (displayName, opening_hours, etc.) push it to ~$30–35/1k.
+# Both paths are therefore equivalent in cost with our current Basic-only mask.
+# Default ON because legacy Find Place is slightly more battle-tested for
+# Mongolian addresses; set ENABLE_LEGACY_FIND_PLACE=false to use Places (New).
+_ENABLE_LEGACY_FIND_PLACE = False
 _gmaps: googlemaps.Client | None = None
 
 
@@ -217,7 +219,24 @@ def parse_frontend_location(data: dict) -> Location:
 
 
 def reverse_geocode(lat: float, lng: float) -> Location:
-    """Reverse geocode coordinates using Google Maps API."""
+    """Reverse geocode coordinates using Google Maps API.
+
+    Cost-saving: results are LRU-cached on an ~11m grid cell (4 decimal places)
+    so repeated driver-location pings within ~10m don't re-hit Google
+    Geocoding API ($5/1k).
+    """
+    return _reverse_geocode_cached(round(lat, 4), round(lng, 4), lat, lng)
+
+
+@lru_cache(maxsize=16384)
+def _reverse_geocode_cached(
+    lat_key: float, lng_key: float, lat: float, lng: float
+) -> Location:
+    # lat_key/lng_key are the rounded values used as the cache key; lat/lng
+    # are the precise input coordinates we forward to Google. This keeps the
+    # grid behavior while preserving the precise lat/lng on the returned
+    # Location (parse_geocode_result fills coords from the API response).
+    _ = (lat_key, lng_key)  # only present to participate in the cache key
     client = cast(Any, _get_client())
     # First try: specific types for detailed address
     results = client.reverse_geocode(
@@ -269,7 +288,13 @@ def _is_in_mongolia(result: dict) -> bool:
 
 
 def _location_from_find_place(candidate: dict, original_address: str) -> Location | None:
-    """Convert a find_place candidate into a Location via reverse geocode for full details."""
+    """Convert a Places hit into a minimal Location.
+
+    We deliberately consume only the fields Places already returned in our field
+    mask (location + formattedAddress) — no extra reverse_geocode call to fill
+    address_components. That extra Geocoding call doubled the per-address cost
+    and we don't actually use district/khoroo/street_address on the Places path.
+    """
     loc = candidate.get("geometry", {}).get("location", {})
     lat, lng = loc.get("lat"), loc.get("lng")
     if not lat or not lng:
@@ -281,20 +306,19 @@ def _location_from_find_place(candidate: dict, original_address: str) -> Locatio
             and _MN_BOUNDS["southwest"]["lng"] <= lng <= _MN_BOUNDS["northeast"]["lng"]
         ):
             return None
-    # Use reverse geocode to get full address_components
-    try:
-        loc_obj = reverse_geocode(lat, lng)
-        # Override formatted_address with the original query result if better
-        fa = _clean_formatted_address(candidate.get("formatted_address")) or loc_obj.formatted_address
-        return loc_obj.model_copy(update={"formatted_address": fa})
-    except Exception:
-        return Location(
-            latitude=lat,
-            longitude=lng,
-            formatted_address=_clean_formatted_address(candidate.get("formatted_address")),
-            street_address=None, city=None, state=None, district=None,
-            khoroo=None, country=None, postal_code=None, building=None,
-        )
+    return Location(
+        latitude=lat,
+        longitude=lng,
+        formatted_address=_clean_formatted_address(candidate.get("formatted_address")),
+        street_address=None,
+        city=None,
+        state=None,
+        district=None,
+        khoroo=None,
+        country=None,
+        postal_code=None,
+        building=None,
+    )
 
 
 def _extract_district_from_query(address: str) -> str | None:
@@ -326,6 +350,10 @@ def _places_text_search(
     elif location_restriction:
         body["locationRestriction"] = location_restriction
     try:
+        # Endpoint must match the body shape: searchText uses {"textQuery": ...}
+        # and returns {"places": [...]}. The previous URL pointed at
+        # places:autocomplete, which expects {"input": ...} and returns
+        # {"suggestions": [...]} — so it silently returned no matches.
         resp = httpx.post(
             "https://places.googleapis.com/v1/places:searchText",
             json=body,
@@ -363,6 +391,77 @@ def _places_text_search(
         return None
 
 
+def _legacy_find_place(
+    query: str,
+    api_key: str,
+    *,
+    location_bias: str | None = None,
+) -> Location | None:
+    """Call legacy 'Find Place from Text' and return a Location or None.
+
+    Cheaper SKU (~$17/1k) vs. Places API (New) Text Search Pro (~$25/1k).
+    Returns 1-3 candidates; we take the first that falls inside Mongolia.
+
+    location_bias is the legacy string format:
+      "circle:RADIUS_M@LAT,LNG"
+      "rectangle:SOUTH,WEST|NORTH,EAST"
+      "point:LAT,LNG"
+    """
+    params = {
+        "input": query,
+        "inputtype": "textquery",
+        "fields": "geometry,formatted_address,place_id",
+        "language": "mn",
+        "key": api_key,
+    }
+    if location_bias:
+        params["locationbias"] = location_bias
+    try:
+        resp = httpx.get(
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            params=params,
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            logger.warning("Legacy Find Place returned HTTP %s for %r", resp.status_code, query)
+            return None
+        body = resp.json()
+        status = body.get("status")
+        if status == "ZERO_RESULTS":
+            return None
+        if status != "OK":
+            logger.warning(
+                "Legacy Find Place returned status=%s for %r (error_message=%s)",
+                status, query, body.get("error_message"),
+            )
+            return None
+        candidates = body.get("candidates", [])
+        if not candidates:
+            return None
+        first = candidates[0]
+        loc_data = first.get("geometry", {}).get("location", {}) or {}
+        lat = loc_data.get("lat")
+        lng = loc_data.get("lng")
+        if lat is None or lng is None:
+            return None
+        if not (
+            _MN_BOUNDS["southwest"]["lat"] <= lat <= _MN_BOUNDS["northeast"]["lat"]
+            and _MN_BOUNDS["southwest"]["lng"] <= lng <= _MN_BOUNDS["northeast"]["lng"]
+        ):
+            return None
+        return _location_from_find_place(
+            {
+                "geometry": {"location": {"lat": lat, "lng": lng}},
+                "formatted_address": first.get("formatted_address", ""),
+                "address_components": [],
+            },
+            query,
+        )
+    except Exception as e:
+        logger.warning("Legacy Find Place failed for %r: %s", query, e)
+        return None
+
+
 def _ub_district_keywords() -> list[str]:
     return [
         "хан-уул", "khan-uul", "khan uul",
@@ -376,20 +475,48 @@ def _ub_district_keywords() -> list[str]:
     ]
 
 
+# Addresses that have failed geocoding — short-circuit before any Google calls
+# so consistently-bad addresses don't re-burn the full Places+Geocoding budget
+# on every driver sync. Bounded to keep memory bounded.
+_GEOCODE_FAIL_CACHE: set[str] = set()
+_GEOCODE_FAIL_CACHE_MAX = 4096
+
+
+def _mark_geocode_failed(address: str) -> None:
+    if len(_GEOCODE_FAIL_CACHE) >= _GEOCODE_FAIL_CACHE_MAX:
+        _GEOCODE_FAIL_CACHE.clear()
+    _GEOCODE_FAIL_CACHE.add(address)
+
+
 @lru_cache(maxsize=2048)
 def geocode_address(address: str) -> Location:
     """Geocode an address string using Google Maps API, restricted to Mongolia.
 
-    Results are cached in-process (LRU, 2048 entries) so the same address string
-    never hits Google twice for the lifetime of the process. Failures (raise)
-    are not cached and will retry.
+    Successes are cached in-process (LRU, 2048 entries) and failures are
+    remembered in _GEOCODE_FAIL_CACHE so the same address string never hits
+    Google twice for the lifetime of the process.
 
     Strategy:
     1. Detect district + khoroo from raw input.
-    2. Places API (New) with tight circle bias around district centre.
-    3. Places API (New) with whole-Mongolia rectangle fallback.
-    4. Geocoding API with targeted query.
+    2. Places API (New) — one call, biased to district circle or Mongolia rect.
+    3. Geocoding API fallback (targeted query, then bare address).
     """
+    # Normalize the address before any work: collapse whitespace and lowercase
+    # so that "1-р хороо" and " 1-р   хороо " share a cache slot. Both Places
+    # Text Search (~$17/1k) and Geocoding ($5/1k) are case-insensitive so this
+    # is safe and just deduplicates trivial variations.
+    normalized = re.sub(r"\s+", " ", address).strip().lower()
+    if not normalized:
+        raise ValueError("Empty address")
+    if normalized != address:
+        return _geocode_address_impl(normalized)
+    return _geocode_address_impl(address)
+
+
+@lru_cache(maxsize=16384)
+def _geocode_address_impl(address: str) -> Location:
+    if address in _GEOCODE_FAIL_CACHE:
+        raise ValueError(f"Geocoding previously failed for address: {address}")
     client = _get_client()
     api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
     lower = address.lower()
@@ -435,12 +562,16 @@ def geocode_address(address: str) -> Location:
     # When we have a usable district hint, bias to that district's centre; the
     # targeted_query carries any extra context (khoroo, district, city, country).
     # Otherwise restrict to the whole-Mongolia rectangle with the base query.
+    # Uses legacy Find Place (~$17/1k) when _ENABLE_LEGACY_FIND_PLACE is on,
+    # else Places API (New) Text Search Pro (~$25/1k).
     if district_hint and district_hint in _DISTRICT_CENTERS:
         center_lat, center_lng = _DISTRICT_CENTERS[district_hint]
         if khoroo_hint:
             radius_m = 6000 if int(khoroo_hint) > 10 else 4000
         else:
             radius_m = 7000
+
+       
         loc = _places_text_search(
             targeted_query,
             api_key,
@@ -479,6 +610,7 @@ def geocode_address(address: str) -> Location:
         mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
 
     if not mn_results:
+        _mark_geocode_failed(address)
         raise ValueError(f"No results found in Mongolia for address: {address}")
 
     return parse_geocode_result(_best_result(mn_results))

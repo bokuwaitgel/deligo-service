@@ -26,7 +26,8 @@ from src.services.deligo_user_proxy import (
     user_info,
 )
 from src.services.blacklist import is_driver_blacklisted
-from src.services.deligo_integration import STATUS_CODE_MAP
+from src.services.deligo_integration import CLOSED_WFM_STATUS_IDS, STATUS_CODE_MAP
+from src.services.geocode_quota import consume_geocode_quota
 from src.services.delivery import _geocode, _build_tracking_url
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,11 @@ class OrderListRequest(BaseModel):
     scope_id: str | None = None
     include_detail: bool = False
     include_status_desc: bool = False
+    created_date: str | None = Field(
+        default=None,
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Filter orders by created date (YYYY-MM-DD); maps to TO_CHAR(t6.created_date, 'YYYY-MM-DD') in the Deligo criteria.",
+    )
 
 
 class DriverOrderSortRequest(BaseModel):
@@ -210,6 +216,10 @@ def _enrich_with_detail_and_location(
             merged["company_id"] = company_id_val
 
         if local:
+            # Orders soft-deleted via the delivery API must not appear in any list.
+            if local.map_status == "deleted":
+                continue
+
             patch: Dict[str, Any] = {}
             if scope_driver_id and not local.driver_id:
                 patch["driver_id"] = scope_driver_id
@@ -237,11 +247,18 @@ def _enrich_with_detail_and_location(
                 or _as_str(merged.get("address"))
                 or "Address not provided"
             )
+            # Skip Google calls entirely for closed orders (delivered/cancelled/exchanged) —
+            # they don't get rendered on the map.
+            wfm_id = _as_int(merged.get("wfm_status_id"))
+            is_closed = wfm_id in CLOSED_WFM_STATUS_IDS
             location_data = None
-            if customer_address and customer_address != "Address not provided":
-                is_countryside = _is_countryside_flag(merged.get("is_country"))
-                print(f"[Geocode] Geocoding {sales_number}: {customer_address}")
-                location_data = _geocode(customer_address, is_countryside=is_countryside)
+            if not is_closed and customer_address and customer_address != "Address not provided":
+                # DB-level cache: reuse any prior geocode for this exact address.
+                location_data = repo.find_location_by_address(customer_address)
+                if location_data is None and consume_geocode_quota(driver_id_val):
+                    is_countryside = _is_countryside_flag(merged.get("is_country"))
+                    print(f"[Geocode] Geocoding {sales_number}: {customer_address}")
+                    location_data = _geocode(customer_address, is_countryside=is_countryside)
                 if location_data:
                     merged["customer_location"] = location_data
             created = repo.create(DeliveryOrder(
@@ -329,7 +346,11 @@ def driver_orders_endpoint(
         if is_driver_blacklisted(driver_id):
             return {"status": "ok", "data": [], "scope_id": driver_id}
         items: List[Dict[str, Any]] = driver_orders(
-            token, driver_id, offset=payload.offset, page_size=payload.page_size
+            token,
+            driver_id,
+            offset=payload.offset,
+            page_size=payload.page_size,
+            created_date=payload.created_date,
         )
         items = _enrich_with_detail_and_location(
             token, items, repo,
@@ -379,8 +400,8 @@ def save_driver_order_sort_endpoint(
             driver_id = pick_driver_id(info)
         if not driver_id:
             raise HTTPException(status_code=403, detail="Жолоочийн ID олдсонгүй")
-        if is_driver_blacklisted(driver_id):
-            return {"status": "ok", "scope_id": driver_id, "matched_count": 0}
+        # if is_driver_blacklisted(driver_id):
+        #     return {"status": "ok", "scope_id": driver_id, "matched_count": 0}
         matched_count = repo.set_driver_sort_orders(driver_id, cleaned_sales_numbers)
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
@@ -404,7 +425,11 @@ def shop_orders_endpoint(
         if not company_id:
             raise HTTPException(status_code=403, detail="Компанийн ID олдсонгүй")
         items: List[Dict[str, Any]] = shop_orders(
-            token, company_id, offset=payload.offset, page_size=payload.page_size
+            token,
+            company_id,
+            offset=payload.offset,
+            page_size=payload.page_size,
+            created_date=payload.created_date,
         )
         items = _enrich_with_detail_and_location(
             token, items, repo,

@@ -1,4 +1,6 @@
 import logging
+import os
+import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -40,14 +42,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if _cors_env:
+    _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    _cors_regex = None
+else:
+    # Backward-compat default: allow all. Set CORS_ALLOWED_ORIGINS in production
+    # (comma-separated, e.g. "https://map.deligoalpha.mn,https://admin.deligoalpha.mn").
+    _cors_origins = ["*"]
+    _cors_regex = ".*"
+    logger.warning(
+        "CORS_ALLOWED_ORIGINS not set — accepting requests from any origin. "
+        "Restrict this in production."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_origin_regex=".*",
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_regex,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 app.include_router(auth_router)
@@ -59,10 +75,20 @@ app.include_router(driver_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    logger.exception(
+        "Unhandled exception on %s %s [request_id=%s]",
+        request.method, request.url.path, request_id,
+    )
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "data": None, "message": "Internal server error"},
+        content={
+            "status": "error",
+            "data": None,
+            "message": "Internal server error",
+            "request_id": request_id,
+        },
+        headers={"X-Request-ID": request_id},
     )
 
 

@@ -23,6 +23,25 @@ class DeliveryRepository:
             .first()
         )
 
+    def find_location_by_address(self, customer_address: str) -> Optional[Dict[str, Any]]:
+        """Return any previously geocoded location stored for this exact address.
+
+        Acts as a free DB-level geocode cache: if any past delivery row has the same
+        customer_address and a non-null customer_location, reuse it instead of
+        calling Google. customer_address is indexed so the lookup is cheap.
+        """
+        if not customer_address:
+            return None
+        row = (
+            self.db_session.query(DeliveryOrder.customer_location)
+            .filter(
+                DeliveryOrder.customer_address == customer_address,
+                DeliveryOrder.customer_location.isnot(None),
+            )
+            .first()
+        )
+        return row.customer_location if row is not None else None
+
     def get_by_sales_id(self, sales_id: str) -> Optional[DeliveryOrder]:
         return (
             self.db_session.query(DeliveryOrder)
@@ -74,37 +93,37 @@ class DeliveryRepository:
         )
         return [r.sales_number for r in rows]
 
-    def get_max_sort_order_for_driver(self, driver_id: str) -> Optional[int]:
-        return (
-            self.db_session.query(func.max(DeliveryOrder.sort_order))
-            .filter(DeliveryOrder.driver_id == driver_id)
-            .scalar()
-        )
-
     def set_driver_sort_orders(self, driver_id: str, sales_numbers: List[str]) -> int:
+        """Set per-driver sort_order from a positional list.
+
+        Loads ALL of the driver's rows (not just ones in the payload) so any row
+        omitted from sales_numbers has its sort_order cleared to NULL. Without
+        this clearing step, a partial reorder would leave stale indexes from a
+        previous larger ranking, creating duplicate sort_orders and gaps.
+
+        Returns the count of sales_numbers from the payload that matched a row.
+        """
         rows = (
             self.db_session.query(DeliveryOrder)
-            .filter(
-                DeliveryOrder.driver_id == driver_id,
-                DeliveryOrder.sales_number.in_(sales_numbers),
-            )
+            .filter(DeliveryOrder.driver_id == driver_id)
             .all()
         )
-        rows_by_sales_number = {row.sales_number: row for row in rows}
+        desired: Dict[str, int] = {sn: idx for idx, sn in enumerate(sales_numbers)}
 
-        updated_count = 0
-        for index, sales_number in enumerate(sales_numbers):
-            row = rows_by_sales_number.get(sales_number)
-            if row is None:
-                continue
-            if row.sort_order != index:
-                row.sort_order = index
-                updated_count += 1
+        changed = False
+        matched = 0
+        for row in rows:
+            new_order = desired.get(row.sales_number)
+            if row.sort_order != new_order:
+                row.sort_order = new_order
+                changed = True
+            if row.sales_number in desired:
+                matched += 1
 
-        if updated_count:
+        if changed:
             self.db_session.commit()
 
-        return len(rows_by_sales_number)
+        return matched
 
     def get_active_by_driver_id(self, driver_id: str) -> List[DeliveryOrder]:
         """Return in-progress rows for a driver: in the driver's current sync AND
