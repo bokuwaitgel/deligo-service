@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from functools import lru_cache
 from typing import Any, cast
 
 import googlemaps
@@ -375,8 +376,13 @@ def _ub_district_keywords() -> list[str]:
     ]
 
 
+@lru_cache(maxsize=2048)
 def geocode_address(address: str) -> Location:
     """Geocode an address string using Google Maps API, restricted to Mongolia.
+
+    Results are cached in-process (LRU, 2048 entries) so the same address string
+    never hits Google twice for the lifetime of the process. Failures (raise)
+    are not cached and will retry.
 
     Strategy:
     1. Detect district + khoroo from raw input.
@@ -425,7 +431,10 @@ def geocode_address(address: str) -> Location:
         extra.append("Монгол")
     targeted_query = f"{address}, {', '.join(extra)}" if extra else base_query
 
-    # --- Step 1: Places API with tight district-level circle bias ---
+    # --- Places API (single call) ---
+    # When we have a usable district hint, bias to that district's centre; the
+    # targeted_query carries any extra context (khoroo, district, city, country).
+    # Otherwise restrict to the whole-Mongolia rectangle with the base query.
     if district_hint and district_hint in _DISTRICT_CENTERS:
         center_lat, center_lng = _DISTRICT_CENTERS[district_hint]
         if khoroo_hint:
@@ -442,24 +451,21 @@ def geocode_address(address: str) -> Location:
                 }
             },
         )
-        if loc:
-            return loc
-
-    # --- Step 2: Places API with whole-Mongolia rectangle ---
-    loc = _places_text_search(
-        base_query,
-        api_key,
-        location_restriction={
-            "rectangle": {
-                "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
-                "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
-            }
-        },
-    )
+    else:
+        loc = _places_text_search(
+            base_query,
+            api_key,
+            location_restriction={
+                "rectangle": {
+                    "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
+                    "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
+                }
+            },
+        )
     if loc:
         return loc
 
-    # --- Step 3: Geocoding API ---
+    # --- Geocoding API fallback ---
     results = client.geocode(  # type: ignore
         targeted_query,
         region="mn",

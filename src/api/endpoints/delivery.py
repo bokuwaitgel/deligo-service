@@ -29,6 +29,7 @@ from src.services.delivery import (
     update_location,
     update_location_by_address,
 )
+from src.services.blacklist import is_driver_blacklisted
 from src.services.deligo_integration import ACTIVE_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.middleware_order import get_orders_by_sales_numbers
 
@@ -491,6 +492,8 @@ async def get_driver_deliveries(
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """List driver orders and auto-sync missing local delivery rows from Deligo payload."""
+    if is_driver_blacklisted(driver_id):
+        return []
     try:
         sales = get_driver_sales(driver_id, page_size=limit, use_service_auth=True)
         if not sales:

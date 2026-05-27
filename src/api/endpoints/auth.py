@@ -25,6 +25,7 @@ from src.services.deligo_user_proxy import (
     shop_orders,
     user_info,
 )
+from src.services.blacklist import is_driver_blacklisted
 from src.services.deligo_integration import STATUS_CODE_MAP
 from src.services.delivery import _geocode, _build_tracking_url
 
@@ -325,6 +326,8 @@ def driver_orders_endpoint(
             driver_id = pick_driver_id(info)
         if not driver_id:
             raise HTTPException(status_code=403, detail="Жолоочийн ID олдсонгүй")
+        if is_driver_blacklisted(driver_id):
+            return {"status": "ok", "data": [], "scope_id": driver_id}
         items: List[Dict[str, Any]] = driver_orders(
             token, driver_id, offset=payload.offset, page_size=payload.page_size
         )
@@ -376,6 +379,8 @@ def save_driver_order_sort_endpoint(
             driver_id = pick_driver_id(info)
         if not driver_id:
             raise HTTPException(status_code=403, detail="Жолоочийн ID олдсонгүй")
+        if is_driver_blacklisted(driver_id):
+            return {"status": "ok", "scope_id": driver_id, "matched_count": 0}
         matched_count = repo.set_driver_sort_orders(driver_id, cleaned_sales_numbers)
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
