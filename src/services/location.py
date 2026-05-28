@@ -609,8 +609,115 @@ def _geocode_address_impl(address: str) -> Location:
         results = client.geocode(address, region="mn", language="mn", bounds=_MN_BOUNDS)  # type: ignore
         mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
 
+    # --- Simplified-query fallback ---
+    # Many real-world addresses arrive as noisy multi-segment strings like
+    #   "SEVEN STAR residence, ХУД - 11 хороо, Улаанбаатар 17020, Монгол Улс"
+    # The leading landmark + abbreviated district + postal code combo can
+    # confuse both Places Text Search and Geocoding. As a last resort, rebuild
+    # a clean canonical query from the strongest hints we have and retry once.
     if not mn_results:
-        _mark_geocode_failed(address)
+        simplified = _build_simplified_query(address, district_hint, khoroo_hint)
+        if simplified and simplified != address and simplified != targeted_query:
+            simple_loc = _places_text_search(
+                simplified,
+                api_key,
+                location_bias=(
+                    {
+                        "circle": {
+                            "center": {
+                                "latitude": _DISTRICT_CENTERS[district_hint][0],
+                                "longitude": _DISTRICT_CENTERS[district_hint][1],
+                            },
+                            "radius": 6000,
+                        }
+                    }
+                    if district_hint and district_hint in _DISTRICT_CENTERS
+                    else None
+                ),
+                location_restriction=(
+                    None
+                    if district_hint and district_hint in _DISTRICT_CENTERS
+                    else {
+                        "rectangle": {
+                            "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
+                            "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
+                        }
+                    }
+                ),
+            )
+            if simple_loc:
+                return simple_loc
+            results = client.geocode(  # type: ignore
+                simplified,
+                region="mn",
+                language="mn",
+                bounds=_MN_BOUNDS,
+            )
+            mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
+
+    if not mn_results:
+        # Only poison the fail-cache for genuinely unrecoverable strings. If we
+        # have district + khoroo structure, the failure is likely transient
+        # (rate limit, network, Places miss for a brand-new landmark) and a
+        # later retry — possibly after the user nudges the pin — should be
+        # allowed to hit Google again.
+        if not (district_hint and khoroo_hint):
+            _mark_geocode_failed(address)
         raise ValueError(f"No results found in Mongolia for address: {address}")
 
     return parse_geocode_result(_best_result(mn_results))
+
+
+def _build_simplified_query(
+    address: str,
+    district_hint: str | None,
+    khoroo_hint: str | None,
+) -> str | None:
+    """Build a clean canonical query from the strongest hints.
+
+    Strips postal codes, country suffix, and reorders into
+    "<landmark>, <district> дүүрэг, <khoroo>-р хороо, Улаанбаатар, Монгол".
+    Returns None if there's nothing distinctive left.
+    """
+    # Strip the trailing ", Монгол Улс" / ", Монгол" so it doesn't get duplicated.
+    cleaned = re.sub(r",\s*монгол(?:\s+улс)?\s*$", "", address, flags=re.IGNORECASE).strip()
+    # Strip 5-digit postal codes (UB uses 5 digits, e.g. 17020).
+    cleaned = re.sub(r"\b\d{5}\b", "", cleaned)
+    # Collapse any leftover double commas / whitespace from the strips.
+    cleaned = re.sub(r"\s*,\s*,+", ",", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,")
+
+    # First comma-separated segment is usually the most distinctive part
+    # (landmark / building / street). Skip any segment that is purely a
+    # district abbreviation or khoroo marker so we don't make the query
+    # less specific than the targeted_query already was.
+    landmark: str | None = None
+    for segment in (s.strip() for s in cleaned.split(",")):
+        if not segment:
+            continue
+        seg_lower = segment.lower()
+        if seg_lower in _DISTRICT_MAP_MN or seg_lower in _DISTRICT_MAP_EN:
+            continue
+        if any(name in seg_lower for name in _DISTRICT_NAMES_MAP):
+            continue
+        if re.fullmatch(r"\d+(?:-р)?\s*(?:khoroo|хороо)", seg_lower):
+            continue
+        if any(k in seg_lower for k in ("улаанбаатар", "ulaanbaatar")):
+            continue
+        landmark = segment
+        break
+
+    parts: list[str] = []
+    if landmark:
+        parts.append(landmark)
+    if district_hint:
+        mn_district = _DISTRICT_CANONICAL_TO_MN.get(district_hint, district_hint)
+        parts.append(f"{mn_district} дүүрэг")
+    if khoroo_hint:
+        parts.append(f"{khoroo_hint}-р хороо")
+    parts.append("Улаанбаатар")
+    parts.append("Монгол")
+
+    if not landmark and not district_hint and not khoroo_hint:
+        return None
+    return ", ".join(parts)

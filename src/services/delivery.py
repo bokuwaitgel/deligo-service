@@ -19,9 +19,19 @@ def _build_tracking_url(sales_number: str) -> Optional[str]:
 
 def _geocode(address: str, is_countryside: bool = False) -> Optional[dict]:
     try:
-        full_address = address if is_countryside else f"монгол улс, улаанбаатар хот, {address}"
-        print(f"Geocoding address: {full_address}")
-        loc: Location = geocode_address(full_address)
+        # `geocode_address` already detects whether the raw string contains
+        # "Улаанбаатар" / "Монгол" and appends the right city/country context
+        # itself, so we hand it the user's string verbatim. Previously we
+        # blindly prepended "монгол улс, улаанбаатар хот, " which produced
+        # noisy duplicated queries like
+        #   "монгол улс, улаанбаатар хот, SEVEN STAR residence, ХУД - 11 хороо, Улаанбаатар 17020, Монгол Улс"
+        # that Google's Places + Geocoding API both returned no results for.
+        # `is_countryside` is left as a no-op flag for API compatibility — the
+        # underlying geocoder no longer needs it because UB/MN detection is
+        # automatic and harmless for non-UB queries.
+        _ = is_countryside
+        print(f"Geocoding address: {address}")
+        loc: Location = geocode_address(address)
         return loc.model_dump(mode="json")
     except Exception:
         logger.warning("Geocoding failed for address: %s", address, exc_info=True)
