@@ -23,6 +23,7 @@ from src.repositories.delivery import DeliveryRepository
 from src.services.delivery import (
     _build_tracking_url,
     _geocode,
+    _reverse_geocode,
     complete_delivery,
     create_delivery,
     get_delivery,
@@ -155,6 +156,31 @@ def _upsert_local_delivery_from_detail(
         or "Address not provided"
     )
     customer_location = _extract_customer_location(detail)
+
+    # If Deligo gave us coords but no structured fields (district/khoroo/street_address/...),
+    # reverse-geocode to derive them from the pin so the driver sees something
+    # better than a single concatenated string. Google's reverse geocode bills
+    # against the same quota as forward geocode, so we still gate on it.
+    _structured_address_keys = (
+        "street_address", "city", "state", "district", "khoroo",
+        "country", "postal_code", "building",
+    )
+    if isinstance(customer_location, dict):
+        has_coords = customer_location.get("latitude") is not None and customer_location.get("longitude") is not None
+        has_structured = any(customer_location.get(k) for k in _structured_address_keys)
+        if has_coords and not has_structured and consume_geocode_quota(driver_id):
+            enriched = _reverse_geocode(
+                float(customer_location["latitude"]),
+                float(customer_location["longitude"]),
+                fallback_address=customer_location.get("formatted_address") or customer_address,
+            )
+            if isinstance(enriched, dict):
+                # Keep the original coordinates / formatted_address; only fold in
+                # the structured fields we were missing.
+                for key in _structured_address_keys:
+                    if customer_location.get(key) in (None, "") and enriched.get(key) not in (None, ""):
+                        customer_location[key] = enriched[key]
+
     logger.info(
         "_upsert %s — extracted customer_location keys=%s "
         "(input had nested loc=%s, customer_address=%r)",
