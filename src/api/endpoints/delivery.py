@@ -575,7 +575,16 @@ async def track_delivery_order(
     try:
         delivery_order = get_delivery(repo, sales_number)
         if not delivery_order:
-            raise HTTPException(status_code=404, detail="Delivery order not found")
+            # Order not yet in our DB — try to pull it from Deligo and upsert
+            # on the fly so first-time customer tracking still works. The
+            # Deligo /api/sales/get endpoint historically keyed on sales_id,
+            # but newer deployments also resolve by sales_number, so we try
+            # that as the lookup key. If nothing comes back, return 404.
+            detail = get_sales_detail(sales_number, use_service_auth=True)
+            created = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
+            if created is None:
+                raise HTTPException(status_code=404, detail="Delivery order not found")
+            delivery_order = DeliveryOrderResponse.model_validate(created)
         if delivery_order.map_status == "deleted":
             raise HTTPException(status_code=404, detail="Delivery order not found")
         detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True) if delivery_order.sales_id else None
