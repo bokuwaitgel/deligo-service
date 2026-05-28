@@ -157,18 +157,32 @@ def _upsert_local_delivery_from_detail(
     )
     customer_location = _extract_customer_location(detail)
 
-    # If Deligo gave us coords but no structured fields (district/khoroo/street_address/...),
-    # reverse-geocode to derive them from the pin so the driver sees something
-    # better than a single concatenated string. Google's reverse geocode bills
-    # against the same quota as forward geocode, so we still gate on it.
+    # If Deligo gave us coords but the row already exists in our DB with structured
+    # fields filled in, we never need to reverse-geocode again. Otherwise, only
+    # spend a reverse-geocode call when BOTH formatted_address AND every
+    # structured field are missing — the driver-facing UI mostly cares about
+    # formatted_address, so a row that already carries that is "good enough"
+    # and not worth a billed Google call.
     _structured_address_keys = (
         "street_address", "city", "state", "district", "khoroo",
         "country", "postal_code", "building",
     )
-    if isinstance(customer_location, dict):
+    _existing_for_enrich = repo.get_by_sales_number(sales_number)
+    _already_enriched = (
+        _existing_for_enrich is not None
+        and isinstance(_existing_for_enrich.customer_location, dict)
+        and any(_existing_for_enrich.customer_location.get(k) for k in _structured_address_keys)
+    )
+    if isinstance(customer_location, dict) and not _already_enriched:
         has_coords = customer_location.get("latitude") is not None and customer_location.get("longitude") is not None
         has_structured = any(customer_location.get(k) for k in _structured_address_keys)
-        if has_coords and not has_structured and consume_geocode_quota(driver_id):
+        has_formatted = bool(customer_location.get("formatted_address"))
+        if (
+            has_coords
+            and not has_structured
+            and not has_formatted
+            and consume_geocode_quota(driver_id)
+        ):
             enriched = _reverse_geocode(
                 float(customer_location["latitude"]),
                 float(customer_location["longitude"]),
@@ -190,7 +204,7 @@ def _upsert_local_delivery_from_detail(
         customer_address,
     )
 
-    existing = repo.get_by_sales_number(sales_number)
+    existing = _existing_for_enrich
 
     # Final fallback: if Deligo gave us no usable coordinates (neither nested
     # nor flat, and the /api/sales/get detail call also came up empty), geocode
@@ -437,6 +451,13 @@ async def update_delivery_address(
         return updated_order
     except HTTPException:
         raise
+    except ValueError as e:
+        # update_location_by_address raises ValueError for quota exhaustion or
+        # geocoding failure — surface those as 429 / 422 instead of generic 500.
+        msg = str(e)
+        if "quota" in msg.lower():
+            raise HTTPException(status_code=429, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
     except Exception as e:
         logger.error(f"Error updating delivery address: {e}")
         raise HTTPException(status_code=500, detail="Failed to update delivery address")

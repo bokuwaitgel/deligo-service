@@ -8,6 +8,7 @@ from schemas.database.delivery_db import DeliveryOrder
 from schemas.delivery import DeliveryOrderCreate, DeliveryOrderResponse, Location, MapStatus
 from src.repositories.delivery import DeliveryRepository
 from src.services.deligo_integration import push_address_update
+from src.services.geocode_quota import consume_geocode_quota
 from src.services.location import geocode_address, reverse_geocode
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,17 @@ def update_location_by_address(
         return None
     if order.map_status == MapStatus.COMPLETED:
         return None
-    location_data = _geocode(address, is_countryside)
+    # DB-cache: ижил хаягийг сүүлд геокод хийсэн бол давтан Google дуудалгүй ашиглана.
+    location_data = repo.find_location_by_address(address)
+    if location_data is None:
+        # Жолооч / захиалгад тус бүрд өдрийн квот хэтрээгүй эсэхийг шалгана.
+        # Driver_id байхгүй (захиалга шинэ) үед sales_number-аар лимит барина.
+        quota_key = order.driver_id or order.sales_number
+        if not consume_geocode_quota(quota_key):
+            raise ValueError(
+                f"Geocode quota exhausted for {quota_key}; try again later"
+            )
+        location_data = _geocode(address, is_countryside)
     if location_data is None:
         raise ValueError(f"Geocoding failed for address: {address}")
     updated = repo.update_partial(sales_number, {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
@@ -10,6 +11,17 @@ from schemas.database.delivery_db import DeliveryOrder
 from src.services.deligo_integration import ACTIVE_STATUS_CODES
 
 logger = logging.getLogger(__name__)
+
+
+_ADDRESS_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_address(address: str) -> str:
+    """Collapse whitespace + lowercase so `find_location_by_address`
+    hits the DB-level geocode cache even when the input differs only by
+    spacing / casing (e.g. "БЗД 4-р хороо  12 байр" vs "бзд 4-р хороо 12 байр").
+    """
+    return _ADDRESS_WS_RE.sub(" ", address).strip().lower()
 
 
 class DeliveryRepository:
@@ -24,18 +36,24 @@ class DeliveryRepository:
         )
 
     def find_location_by_address(self, customer_address: str) -> Optional[Dict[str, Any]]:
-        """Return any previously geocoded location stored for this exact address.
+        """Return any previously geocoded location stored for this address.
 
-        Acts as a free DB-level geocode cache: if any past delivery row has the same
-        customer_address and a non-null customer_location, reuse it instead of
-        calling Google. customer_address is indexed so the lookup is cheap.
+        Acts as a free DB-level geocode cache: if any past delivery row has the
+        same (normalized) customer_address and a non-null customer_location,
+        reuse it instead of calling Google. Matching is whitespace-insensitive
+        and case-insensitive so trivial formatting differences still hit cache.
         """
         if not customer_address:
+            return None
+        normalized = _normalize_address(customer_address)
+        if not normalized:
             return None
         row = (
             self.db_session.query(DeliveryOrder.customer_location)
             .filter(
-                DeliveryOrder.customer_address == customer_address,
+                func.lower(
+                    func.regexp_replace(func.trim(DeliveryOrder.customer_address), r"\s+", " ", "g")
+                ) == normalized,
                 DeliveryOrder.customer_location.isnot(None),
             )
             .first()
