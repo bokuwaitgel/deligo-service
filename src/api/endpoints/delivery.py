@@ -405,19 +405,20 @@ class _DeleteDeliveryRequest(BaseModel):
     sales_id: str = Field(..., description="Sales ID of the delivery order")
 
 
-@router.post("/delete", dependencies=[Depends(require_api_key)])
+@router.post("/delete/{sales_id}", dependencies=[Depends(require_api_key)])
 async def delete_delivery_order(
-    payload: _DeleteDeliveryRequest,
+    sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Soft-delete a delivery order by setting map_status to 'deleted'."""
-    existing = repo.get_by_sales_id(payload.sales_id)
+    print("Delete request received for sales_id:", sales_id)
+    existing = repo.get_by_sales_id(sales_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     updated = repo.update_partial(existing.sales_number, {"map_status": "deleted"})
     if not updated:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    return {"status": "deleted", "sales_number": existing.sales_number, "sales_id": payload.sales_id}
+    return {"status": "deleted", "sales_number": existing.sales_number, "sales_id": sales_id}
 
 # ---------------------------------------------------------------------------
 # User View Endpoints 
