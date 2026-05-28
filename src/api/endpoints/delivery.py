@@ -30,7 +30,7 @@ from src.services.delivery import (
     update_location_by_address,
 )
 from src.services.blacklist import is_driver_blacklisted
-from src.services.deligo_integration import ACTIVE_STATUS_CODES, CLOSED_WFM_STATUS_IDS, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
+from src.services.deligo_integration import ACTIVE_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.middleware_order import get_orders_by_sales_numbers
 
@@ -155,17 +155,25 @@ def _upsert_local_delivery_from_detail(
         or "Address not provided"
     )
     customer_location = _extract_customer_location(detail)
+    logger.info(
+        "_upsert %s — extracted customer_location keys=%s "
+        "(input had nested loc=%s, customer_address=%r)",
+        sales_number,
+        list(customer_location.keys()) if isinstance(customer_location, dict) else None,
+        isinstance(detail.get("customer_location"), dict),
+        customer_address,
+    )
 
     existing = repo.get_by_sales_number(sales_number)
 
-    # Geocode only if Deligo API gave no coordinates AND DB has no location yet.
-    # Skip Google calls entirely for closed orders (delivered/cancelled/exchanged) —
-    # they don't get rendered on the map.
-    wfm_id = _as_int(detail.get("wfm_status_id"))
-    is_closed = wfm_id in CLOSED_WFM_STATUS_IDS
+    # Final fallback: if Deligo gave us no usable coordinates (neither nested
+    # nor flat, and the /api/sales/get detail call also came up empty), geocode
+    # the customer_address so the driver always has SOMETHING to navigate to.
+    # We still skip the call when there's no address to feed Google, but
+    # closed-order short-circuit was removed — historical orders also need a
+    # pin to render correctly on the admin/shop map and in proof reviews.
     if (
-        not is_closed
-        and customer_location is None
+        customer_location is None
         and customer_address
         and customer_address != "Address not provided"
     ):
@@ -175,8 +183,19 @@ def _upsert_local_delivery_from_detail(
             if customer_location is None and consume_geocode_quota(driver_id):
                 is_countryside = bool(detail.get("is_country") in {1, True, "1", "true"})
                 customer_location = _geocode(customer_address, is_countryside=is_countryside)
+            if customer_location is None:
+                logger.warning(
+                    "_upsert %s — could not produce customer_location "
+                    "(cache miss + geocode quota exhausted or failed) for address=%r",
+                    sales_number, customer_address,
+                )
 
     if existing is None:
+        logger.info(
+            "_upsert %s — INSERT with customer_location=%s",
+            sales_number,
+            "present" if customer_location else "NULL",
+        )
         created = DeliveryOrder(
             sales_number=sales_number,
             sales_id=sales_id,
@@ -593,21 +612,92 @@ async def get_driver_deliveries(
         deleted_numbers = {sn for sn, row in all_local_rows.items() if row.map_status == "deleted"}
         local_rows = {sn: row for sn, row in all_local_rows.items() if row.map_status != "deleted"}
 
+        # The Deligo /api/sales/integration LIST response only ships a thin
+        # payload — the full structured customer_location (street_address,
+        # district, khoroo, building.*) lives behind /api/sales/get. Pull the
+        # detail so the row we insert has everything the driver needs.
+        _structured_loc_keys = (
+            "street_address", "city", "state", "district", "khoroo",
+            "country", "postal_code", "building",
+        )
+
+        def _hydrate_location_from_detail(sales_number: str) -> None:
+            detail = details_by_number.get(sales_number)
+            if not isinstance(detail, dict):
+                return
+            loc = detail.get("customer_location") if isinstance(detail.get("customer_location"), dict) else None
+            has_coords = bool(loc and loc.get("latitude") is not None and loc.get("longitude") is not None)
+            has_structured = bool(loc and any(loc.get(k) for k in _structured_loc_keys))
+            # Skip the detail round-trip only when the list payload is already
+            # complete (coords AND at least one structured field). Otherwise the
+            # driver loses building/district/khoroo info on first insert.
+            if has_coords and has_structured:
+                return
+            sales_id_val = _as_str(detail.get("sales_id"))
+            if not sales_id_val:
+                logger.info("hydrate skipped for %s — no sales_id", sales_number)
+                return
+            try:
+                full = get_sales_detail(sales_id_val, use_service_auth=True)
+            except Exception:
+                logger.warning("get_sales_detail raised for %s", sales_number, exc_info=True)
+                full = None
+            if not isinstance(full, dict):
+                logger.info("get_sales_detail returned no dict for %s (sales_id=%s)", sales_number, sales_id_val)
+                return
+            # Merge full detail on top of list payload — list values are kept
+            # only when the detail call doesn't override them.
+            details_by_number[sales_number] = {**detail, **full}
+            new_loc = details_by_number[sales_number].get("customer_location")
+            logger.info(
+                "hydrate %s sales_id=%s — list had coords=%s structured=%s, detail loc has keys=%s",
+                sales_number, sales_id_val, has_coords, has_structured,
+                list(new_loc.keys()) if isinstance(new_loc, dict) else None,
+            )
+
         # Ensure every non-deleted Deligo order has a local delivery row (for map/location workflows).
         for sales_number in sales_numbers:
             if sales_number in deleted_numbers:
                 continue
             existing = local_rows.get(sales_number)
             if existing is None:
-                # New order — always upsert (may geocode).
+                # New order — fetch the full detail (with structured location)
+                # so the first DB insert carries everything the driver needs.
+                _hydrate_location_from_detail(sales_number)
                 created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
                 if created is not None:
                     local_rows[sales_number] = created
             else:
-                # Existing order — only patch if something meaningful is missing.
+                # Existing order — patch if anything meaningful is missing OR if
+                # Deligo now exposes structured address fields the local row is
+                # missing (older rows stored only lat/lng/formatted_address).
+                existing_loc = existing.customer_location if isinstance(existing.customer_location, dict) else None
+                structured_keys = (
+                    "street_address", "city", "state", "district", "khoroo",
+                    "country", "postal_code", "building",
+                )
+                existing_has_structured = bool(
+                    existing_loc and any(existing_loc.get(k) for k in structured_keys)
+                )
+                # When the existing row hasn't been hydrated with structured fields,
+                # fetch the detail call so we have something to merge from.
+                if existing_loc is None or not existing_has_structured:
+                    _hydrate_location_from_detail(sales_number)
+
+                deligo_loc = details_by_number[sales_number].get("customer_location")
+                deligo_loc = deligo_loc if isinstance(deligo_loc, dict) else None
+                has_missing_structured = bool(
+                    existing_loc is not None
+                    and deligo_loc is not None
+                    and any(
+                        not existing_loc.get(k) and deligo_loc.get(k)
+                        for k in structured_keys
+                    )
+                )
                 needs_patch = (
                     (not existing.driver_id and driver_id) or
-                    existing.customer_location is None
+                    existing.customer_location is None or
+                    has_missing_structured
                 )
                 if needs_patch:
                     refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)

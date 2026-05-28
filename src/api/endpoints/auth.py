@@ -231,8 +231,48 @@ def _enrich_with_detail_and_location(
                 local = repo.update_partial(sales_number, patch) or local
                 local_rows[sales_number] = local
 
-            if local.customer_location:
-                merged["customer_location"] = local.customer_location
+            # Combine local (authoritative coords from customer-adjusted pin)
+            # with whatever Deligo returns (often the only source of structured
+            # fields like street_address/district/khoroo/building). Overwriting
+            # with the local row alone would silently hide structured fields
+            # that the deligo payload exposes for the driver.
+            if local.customer_location or isinstance(merged.get("customer_location"), dict):
+                deligo_loc = merged.get("customer_location") if isinstance(merged.get("customer_location"), dict) else None
+                local_loc = local.customer_location if isinstance(local.customer_location, dict) else None
+                combined: Dict[str, Any] = {}
+                if deligo_loc:
+                    combined.update(deligo_loc)
+                if local_loc:
+                    # Local row wins for coords + formatted_address (the customer
+                    # may have moved the pin), but only when those fields are populated.
+                    for key in ("latitude", "longitude", "formatted_address"):
+                        if local_loc.get(key):
+                            combined[key] = local_loc[key]
+                    # For structured address fields, prefer whichever source has a value.
+                    for key in (
+                        "street_address", "city", "state", "district", "khoroo",
+                        "country", "postal_code", "building",
+                    ):
+                        if combined.get(key) in (None, "") and local_loc.get(key) not in (None, ""):
+                            combined[key] = local_loc[key]
+                if combined:
+                    merged["customer_location"] = combined
+
+                # Persist any structured fields the local row was missing so
+                # later requests don't have to re-derive them from Deligo.
+                if local_loc is not None and deligo_loc:
+                    persisted_patch: Dict[str, Any] = {}
+                    structured_keys = (
+                        "street_address", "city", "state", "district", "khoroo",
+                        "country", "postal_code", "building",
+                    )
+                    if any(
+                        local_loc.get(k) in (None, "") and deligo_loc.get(k) not in (None, "")
+                        for k in structured_keys
+                    ):
+                        persisted_patch["customer_location"] = combined
+                    if persisted_patch:
+                        repo.update_partial(sales_number, persisted_patch)
         elif geocode_new:
             driver_id_val = scope_driver_id or _as_str(item.get("driver_id"))
             sort_order = None
