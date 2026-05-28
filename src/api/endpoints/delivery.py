@@ -47,7 +47,38 @@ def _as_str(value: object) -> Optional[str]:
 
 
 def _extract_customer_location(detail: dict) -> Optional[dict]:
-    # Accept common coordinate field variations returned by third-party payloads.
+    """Pull a Location dict out of a Deligo sales detail.
+
+    Preserves every structured field the upstream payload provides
+    (street_address, district, khoroo, building.{building,entrance,floor,door,extra_notes},
+    city, state, postal_code, country) instead of flattening to just
+    lat/lng/formatted_address — those are the only fields the driver app needs
+    to show the courier *where* and *how* to enter the building.
+    """
+    # Prefer a nested customer_location dict when one is provided — Deligo and
+    # our own updates both round-trip the full structured Location object via
+    # this key, so adopting it wholesale keeps building/district info intact.
+    nested = detail.get("customer_location")
+    if isinstance(nested, dict):
+        lat_raw = nested.get("latitude") or nested.get("lat")
+        lng_raw = nested.get("longitude") or nested.get("lng")
+        try:
+            latitude = float(lat_raw) if lat_raw is not None else None
+            longitude = float(lng_raw) if lng_raw is not None else None
+        except (TypeError, ValueError):
+            latitude = longitude = None
+        if latitude is not None and longitude is not None:
+            location = dict(nested)
+            location["latitude"] = latitude
+            location["longitude"] = longitude
+            if not location.get("formatted_address"):
+                location["formatted_address"] = (
+                    _as_str(detail.get("customer_address"))
+                    or _as_str(detail.get("formatted_address"))
+                )
+            return location
+
+    # Fallback: flat coordinate fields on the detail itself.
     lat_raw = (
         detail.get("latitude")
         or detail.get("lat")
@@ -70,12 +101,30 @@ def _extract_customer_location(detail: dict) -> Optional[dict]:
     except (TypeError, ValueError):
         return None
 
-    return {
+    location: dict = {
         "latitude": latitude,
         "longitude": longitude,
         "formatted_address": _as_str(detail.get("customer_address"))
         or _as_str(detail.get("formatted_address")),
     }
+    # Carry over any structured address fields the payload happens to expose
+    # at the top level (Deligo sometimes returns these alongside the coords).
+    for key in (
+        "street_address",
+        "city",
+        "state",
+        "district",
+        "khoroo",
+        "country",
+        "postal_code",
+    ):
+        value = detail.get(key)
+        if value is not None and _as_str(value):
+            location[key] = value
+    building = detail.get("building")
+    if isinstance(building, dict):
+        location["building"] = building
+    return location
 
 
 def _as_int(value: object) -> Optional[int]:
@@ -163,6 +212,33 @@ def _upsert_local_delivery_from_detail(
         patch["customer_address"] = customer_address
     if existing.customer_location is None and customer_location is not None:
         patch["customer_location"] = customer_location
+    elif (
+        existing.customer_location is not None
+        and customer_location is not None
+        and isinstance(existing.customer_location, dict)
+    ):
+        # Existing row has *some* location — fill in any structured fields
+        # (street_address, district, khoroo, building, etc.) the new payload
+        # provides that the saved blob is missing, without clobbering coords
+        # the customer may have hand-corrected via the address form.
+        structured_keys = (
+            "street_address",
+            "city",
+            "state",
+            "district",
+            "khoroo",
+            "country",
+            "postal_code",
+            "building",
+        )
+        merged = dict(existing.customer_location)
+        changed = False
+        for key in structured_keys:
+            if merged.get(key) in (None, "") and customer_location.get(key) not in (None, ""):
+                merged[key] = customer_location[key]
+                changed = True
+        if changed:
+            patch["customer_location"] = merged
 
     if patch:
         updated = repo.update_partial(sales_number, patch)
