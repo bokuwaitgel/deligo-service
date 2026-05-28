@@ -373,6 +373,34 @@ def driver_orders_endpoint(
         active_sns: set = set(status_by_sn.keys())
         repo.sync_driver_active_status(driver_id, active_sns, status_by_sn)
 
+        #if customer_location is missing add location with geocoding or from detail
+        for item in items:
+            if not item.get("customer_location"):
+                sales_number = _as_str(item.get("sales_number"))
+                if sales_number:
+                    local = repo.get_by_sales_number(sales_number)
+                    if local and local.customer_location:
+                        item["customer_location"] = local.customer_location
+                    elif payload.include_detail:
+                        # If we already fetched detail, try extracting location from it before geocoding.
+                        location_data = _extract_customer_location(item)
+                        if location_data:
+                            item["customer_location"] = location_data
+                            repo.update_partial(sales_number, {"customer_location": location_data})
+                        else:
+                            # As a last resort, geocode the address if quota allows.
+                            customer_address = _as_str(item.get("customer_address")) or "Address not provided"
+                            if customer_address and customer_address != "Address not provided":
+                                company_id_val = _as_str(item.get("company_id"))
+                                driver_id_val = driver_id
+                                is_countryside = _is_countryside_flag(item.get("is_country"))
+                                if consume_geocode_quota(driver_id_val):
+                                    print(f"[Geocode] Geocoding {sales_number}: {customer_address}")
+                                    geocoded = _geocode(customer_address, is_countryside=is_countryside)
+                                    if geocoded:
+                                        item["customer_location"] = geocoded
+                                        repo.update_partial(sales_number, {"customer_location": geocoded})
+
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
     return {"status": "ok", "data": items, "scope_id": driver_id}
