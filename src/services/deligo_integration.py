@@ -70,6 +70,12 @@ _CLOSED_STATUS_IDS = CLOSED_WFM_STATUS_IDS  # kept for in-module backwards compa
 ACTIVE_WFM_STATUS_IDS = {1, 5, 8}
 ACTIVE_STATUS_CODES = {STATUS_CODE_MAP[i] for i in ACTIVE_WFM_STATUS_IDS}
 
+# Statuses for orders that are still on the driver's delivery queue and should be
+# ranked by the driver's confirmed sort_order. 5=Хуваарилсан, 8=Жолооч хүлээн авсан.
+# Any other status (delivered, deferred, etc.) is pushed to the end of the list.
+OPEN_WFM_STATUS_IDS = {5, 8}
+OPEN_STATUS_CODES = {STATUS_CODE_MAP[i] for i in OPEN_WFM_STATUS_IDS}
+
 # ---------------------------------------------------------------------------
 # In-process TTL cache for /api/sales/get results.
 # Avoids N round-trips when the same order is fetched multiple times within

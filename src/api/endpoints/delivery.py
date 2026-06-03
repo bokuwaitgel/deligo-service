@@ -31,7 +31,7 @@ from src.services.delivery import (
     update_location_by_address,
 )
 from src.services.blacklist import is_driver_blacklisted
-from src.services.deligo_integration import ACTIVE_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
+from src.services.deligo_integration import OPEN_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.middleware_order import get_orders_by_sales_numbers
 
@@ -775,8 +775,11 @@ async def get_driver_deliveries(
             item = DeliveryOrderResponse.model_validate(local)
             item = item.model_copy(update={"detail": details_by_number[sales_number]})
             response.append(item)
+        # Open orders (wfm 5/8) come first, ranked by the driver's confirmed
+        # sort_order (nulls last). Every other status (delivered, deferred, etc.)
+        # is pushed to the end of the list.
         response.sort(key=lambda r: (
-            r.status in ACTIVE_STATUS_CODES,
+            r.status not in OPEN_STATUS_CODES,
             r.sort_order is None,
             r.sort_order if r.sort_order is not None else 0,
         ))
