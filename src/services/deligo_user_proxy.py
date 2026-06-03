@@ -135,6 +135,7 @@ def _order_list(
     offset: int,
     page_size: int,
     created_date: Optional[str] = None,
+    default_today: bool = True,
 ) -> List[Dict[str, Any]]:
     criteria: Dict[str, Any] = {
         criteria_field: {
@@ -143,17 +144,22 @@ def _order_list(
             "dataType": "integer",
         }
     }
-    if not created_date:
+    # Default the date filter to today unless the caller opts out (default_today=
+    # False). The filter is on t6.created_date, which is NULL for orders that have
+    # no delivery/status row yet (e.g. brand-new unassigned orders), so applying it
+    # silently drops those orders. The shop list wants those too, so it opts out.
+    if not created_date and default_today:
         created_date = datetime.now(ZoneInfo("Asia/Ulaanbaatar")).strftime("%Y-%m-%d")
-    print(f"[Deligo] Adding created_date filter to criteria: {created_date}")
-    # Deligo expects this exact key — TO_CHAR on the SQL side normalizes the
-    # timestamp column to a YYYY-MM-DD string for equality comparison.
-    # Skip the filter entirely when no date is provided; Deligo rejects
-    # criteria entries with a null value ("must contain" error).
-    criteria["TO_CHAR(t6.created_date, 'YYYY-MM-DD')"] = {
-        "value": created_date,
-        "operator": "=",
-        }
+    if created_date:
+        print(f"[Deligo] Adding created_date filter to criteria: {created_date}")
+        # Deligo expects this exact key — TO_CHAR on the SQL side normalizes the
+        # timestamp column to a YYYY-MM-DD string for equality comparison.
+        # Skip the filter entirely when no date is provided; Deligo rejects
+        # criteria entries with a null value ("must contain" error).
+        criteria["TO_CHAR(t6.created_date, 'YYYY-MM-DD')"] = {
+            "value": created_date,
+            "operator": "=",
+            }
     payload = {
         "criteria": criteria,
         "paging": {"offset": offset, "pageSize": page_size},
@@ -204,7 +210,14 @@ def shop_orders(
     page_size: int = 50,
     created_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    return _order_list(token, "es.company_id", company_id, offset, page_size, created_date=created_date)
+    # Don't force a today-only filter: t6.created_date is NULL for new/unassigned
+    # orders and would drop them. Honor an explicit created_date if the caller
+    # passes one (e.g. date search); otherwise return all company orders and let
+    # the frontend scope to today.
+    return _order_list(
+        token, "es.company_id", company_id, offset, page_size,
+        created_date=created_date, default_today=False,
+    )
 
 
 def sales_detail(sales_id: str) -> Optional[Dict[str, Any]]:

@@ -273,7 +273,11 @@ def _enrich_with_detail_and_location(
                         persisted_patch["customer_location"] = combined
                     if persisted_patch:
                         repo.update_partial(sales_number, persisted_patch)
-        elif geocode_new:
+        else:
+            # No local row yet — create one so the order enters our DB and shows
+            # up in shop/map lists (sync_active defaults to True). Geocoding is the
+            # only Google-billed step and stays opt-in via geocode_new; the shop
+            # list passes geocode_new=False but still gets its rows created here.
             driver_id_val = scope_driver_id or _as_str(item.get("driver_id"))
             sort_order = None
             if driver_id_val:
@@ -293,9 +297,10 @@ def _enrich_with_detail_and_location(
             is_closed = wfm_id in CLOSED_WFM_STATUS_IDS
             location_data = None
             if not is_closed and customer_address and customer_address != "Address not provided":
-                # DB-level cache: reuse any prior geocode for this exact address.
+                # DB-level cache: reuse any prior geocode for this exact address (free).
                 location_data = repo.find_location_by_address(customer_address)
-                if location_data is None and consume_geocode_quota(driver_id_val):
+                # Live Google geocode is opt-in (cost) — only when geocode_new is set.
+                if location_data is None and geocode_new and consume_geocode_quota(driver_id_val):
                     is_countryside = _is_countryside_flag(merged.get("is_country"))
                     print(f"[Geocode] Geocoding {sales_number}: {customer_address}")
                     location_data = _geocode(customer_address, is_countryside=is_countryside)
