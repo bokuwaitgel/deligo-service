@@ -233,6 +233,61 @@ def get_driver_sales(
     return []
 
 
+def get_company_sales(
+    offset: int = 0,
+    page_size: int = 2500,
+    use_service_auth: bool = True,
+    target_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List ALL delivery sales for a single day (every driver) via /api/sales/integration.
+
+    Mirrors get_driver_sales but drops the es.driver_id filter so the admin
+    overview panel can build the full "drivers out today" list, status counts and
+    phone search from a single call. wfm_status_id is restricted to the delivery
+    lifecycle statuses (assigned → delivered / deferred / cancelled).
+    """
+    day = target_date or date.today().isoformat()
+    payload = {
+        "criteria": {
+            "es.wfm_status_id": {
+                "value": "(3,5,8,12,13,14,15,16,17,23)",
+                "operator": "in",
+                "dataType": "integer",
+            },
+            "t2.status_id": {
+                "value": "5",
+                "operator": "=",
+                "dataType": "integer",
+            },
+            "TO_CHAR(t6.created_date, 'YYYY-MM-DD')": {
+                "value": day,
+                "operator": "=",
+            },
+        },
+        "paging": {"offset": offset, "pageSize": page_size},
+    }
+    r = _post_with_retry("/api/sales/integration", payload, use_service_auth=use_service_auth)
+
+    # Same auth fallback as get_driver_sales: retry unauthenticated if the
+    # service token is missing or rejected.
+    if r is None and use_service_auth:
+        r = _post_with_retry("/api/sales/integration", payload, use_service_auth=False)
+    if r is not None and r.status_code in (401, 403) and use_service_auth:
+        r = _post_with_retry("/api/sales/integration", payload, use_service_auth=False)
+
+    if r is None or r.status_code != 200:
+        if r is not None:
+            logger.warning("Deligo company sales list returned %s", r.status_code)
+        return []
+    body = r.json()
+    data = body.get("data")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("items") or data.get("data") or []
+    return []
+
+
 def change_sales_status(sales_id: str, status_id: int, driver_token: Optional[str] = None) -> bool:
     """Change a sales order's wfm status via POST /api/sales/changestatus.
 

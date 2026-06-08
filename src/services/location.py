@@ -271,7 +271,6 @@ _MN_BOUNDS = {
     "northeast": {"lat": 52.2, "lng": 119.9},
 }
 
-
 def _is_in_mongolia(result: dict) -> bool:
     """Check that a geocode result is within Mongolia."""
     components = result.get("address_components", [])
@@ -391,77 +390,6 @@ def _places_text_search(
         return None
 
 
-def _legacy_find_place(
-    query: str,
-    api_key: str,
-    *,
-    location_bias: str | None = None,
-) -> Location | None:
-    """Call legacy 'Find Place from Text' and return a Location or None.
-
-    Cheaper SKU (~$17/1k) vs. Places API (New) Text Search Pro (~$25/1k).
-    Returns 1-3 candidates; we take the first that falls inside Mongolia.
-
-    location_bias is the legacy string format:
-      "circle:RADIUS_M@LAT,LNG"
-      "rectangle:SOUTH,WEST|NORTH,EAST"
-      "point:LAT,LNG"
-    """
-    params = {
-        "input": query,
-        "inputtype": "textquery",
-        "fields": "geometry,formatted_address,place_id",
-        "language": "mn",
-        "key": api_key,
-    }
-    if location_bias:
-        params["locationbias"] = location_bias
-    try:
-        resp = httpx.get(
-            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
-            params=params,
-            timeout=5,
-        )
-        if resp.status_code != 200:
-            logger.warning("Legacy Find Place returned HTTP %s for %r", resp.status_code, query)
-            return None
-        body = resp.json()
-        status = body.get("status")
-        if status == "ZERO_RESULTS":
-            return None
-        if status != "OK":
-            logger.warning(
-                "Legacy Find Place returned status=%s for %r (error_message=%s)",
-                status, query, body.get("error_message"),
-            )
-            return None
-        candidates = body.get("candidates", [])
-        if not candidates:
-            return None
-        first = candidates[0]
-        loc_data = first.get("geometry", {}).get("location", {}) or {}
-        lat = loc_data.get("lat")
-        lng = loc_data.get("lng")
-        if lat is None or lng is None:
-            return None
-        if not (
-            _MN_BOUNDS["southwest"]["lat"] <= lat <= _MN_BOUNDS["northeast"]["lat"]
-            and _MN_BOUNDS["southwest"]["lng"] <= lng <= _MN_BOUNDS["northeast"]["lng"]
-        ):
-            return None
-        return _location_from_find_place(
-            {
-                "geometry": {"location": {"lat": lat, "lng": lng}},
-                "formatted_address": first.get("formatted_address", ""),
-                "address_components": [],
-            },
-            query,
-        )
-    except Exception as e:
-        logger.warning("Legacy Find Place failed for %r: %s", query, e)
-        return None
-
-
 def _ub_district_keywords() -> list[str]:
     return [
         "хан-уул", "khan-uul", "khan uul",
@@ -508,13 +436,12 @@ def geocode_address(address: str) -> Location:
     normalized = re.sub(r"\s+", " ", address).strip().lower()
     if not normalized:
         raise ValueError("Empty address")
-    if normalized != address:
-        return _geocode_address_impl(normalized)
-    return _geocode_address_impl(address)
+    return _geocode_address_impl(normalized, places=True)
+
 
 
 @lru_cache(maxsize=16384)
-def _geocode_address_impl(address: str) -> Location:
+def _geocode_address_impl(address: str, places: bool = False) -> Location:
     if address in _GEOCODE_FAIL_CACHE:
         raise ValueError(f"Geocoding previously failed for address: {address}")
     client = _get_client()
@@ -557,45 +484,6 @@ def _geocode_address_impl(address: str) -> Location:
     if not has_mn_country:
         extra.append("Монгол")
     targeted_query = f"{address}, {', '.join(extra)}" if extra else base_query
-
-    # --- Places API (single call) ---
-    # When we have a usable district hint, bias to that district's centre; the
-    # targeted_query carries any extra context (khoroo, district, city, country).
-    # Otherwise restrict to the whole-Mongolia rectangle with the base query.
-    # Uses legacy Find Place (~$17/1k) when _ENABLE_LEGACY_FIND_PLACE is on,
-    # else Places API (New) Text Search Pro (~$25/1k).
-    if district_hint and district_hint in _DISTRICT_CENTERS:
-        center_lat, center_lng = _DISTRICT_CENTERS[district_hint]
-        if khoroo_hint:
-            radius_m = 6000 if int(khoroo_hint) > 10 else 4000
-        else:
-            radius_m = 7000
-
-       
-        loc = _places_text_search(
-            targeted_query,
-            api_key,
-            location_bias={
-                "circle": {
-                    "center": {"latitude": center_lat, "longitude": center_lng},
-                    "radius": radius_m,
-                }
-            },
-        )
-    else:
-        loc = _places_text_search(
-            base_query,
-            api_key,
-            location_restriction={
-                "rectangle": {
-                    "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
-                    "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
-                }
-            },
-        )
-    if loc:
-        return loc
-
     # --- Geocoding API fallback ---
     results = client.geocode(  # type: ignore
         targeted_query,
@@ -608,62 +496,6 @@ def _geocode_address_impl(address: str) -> Location:
     if not mn_results:
         results = client.geocode(address, region="mn", language="mn", bounds=_MN_BOUNDS)  # type: ignore
         mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
-
-    # --- Simplified-query fallback ---
-    # Many real-world addresses arrive as noisy multi-segment strings like
-    #   "SEVEN STAR residence, ХУД - 11 хороо, Улаанбаатар 17020, Монгол Улс"
-    # The leading landmark + abbreviated district + postal code combo can
-    # confuse both Places Text Search and Geocoding. As a last resort, rebuild
-    # a clean canonical query from the strongest hints we have and retry once.
-    if not mn_results:
-        simplified = _build_simplified_query(address, district_hint, khoroo_hint)
-        if simplified and simplified != address and simplified != targeted_query:
-            simple_loc = _places_text_search(
-                simplified,
-                api_key,
-                location_bias=(
-                    {
-                        "circle": {
-                            "center": {
-                                "latitude": _DISTRICT_CENTERS[district_hint][0],
-                                "longitude": _DISTRICT_CENTERS[district_hint][1],
-                            },
-                            "radius": 6000,
-                        }
-                    }
-                    if district_hint and district_hint in _DISTRICT_CENTERS
-                    else None
-                ),
-                location_restriction=(
-                    None
-                    if district_hint and district_hint in _DISTRICT_CENTERS
-                    else {
-                        "rectangle": {
-                            "low": {"latitude": _MN_BOUNDS["southwest"]["lat"], "longitude": _MN_BOUNDS["southwest"]["lng"]},
-                            "high": {"latitude": _MN_BOUNDS["northeast"]["lat"], "longitude": _MN_BOUNDS["northeast"]["lng"]},
-                        }
-                    }
-                ),
-            )
-            if simple_loc:
-                return simple_loc
-            results = client.geocode(  # type: ignore
-                simplified,
-                region="mn",
-                language="mn",
-                bounds=_MN_BOUNDS,
-            )
-            mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
-
-    if not mn_results:
-        # Only poison the fail-cache for genuinely unrecoverable strings. If we
-        # have district + khoroo structure, the failure is likely transient
-        # (rate limit, network, Places miss for a brand-new landmark) and a
-        # later retry — possibly after the user nudges the pin — should be
-        # allowed to hit Google again.
-        if not (district_hint and khoroo_hint):
-            _mark_geocode_failed(address)
-        raise ValueError(f"No results found in Mongolia for address: {address}")
 
     return parse_geocode_result(_best_result(mn_results))
 

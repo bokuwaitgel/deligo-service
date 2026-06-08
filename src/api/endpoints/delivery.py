@@ -31,7 +31,7 @@ from src.services.delivery import (
     update_location_by_address,
 )
 from src.services.blacklist import is_driver_blacklisted
-from src.services.deligo_integration import OPEN_STATUS_CODES, change_sales_status, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
+from src.services.deligo_integration import OPEN_STATUS_CODES, change_sales_status, get_company_sales, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.middleware_order import get_orders_by_sales_numbers
 
@@ -366,6 +366,24 @@ async def get_active_drivers(
     except Exception as e:
         logger.error("Error fetching active drivers: %s", e)
         raise HTTPException(status_code=500, detail="Failed to fetch active drivers")
+
+
+@router.get("/today", dependencies=[Depends(require_api_key)])
+async def get_today_deliveries():
+    """All of today's delivery orders across every driver (admin overview feed).
+
+    A single Deligo /api/sales/integration call (no driver filter). The payload is
+    thin — enough to build the driver list, status counts and phone search. The
+    full structured customer_location / coordinates are loaded lazily when a
+    driver or order is opened (per-driver endpoint / order detail), so we do NOT
+    do a per-order detail round-trip here.
+    """
+    try:
+        sales = get_company_sales(page_size=2500, use_service_auth=True)
+        return [structure_sales_detail(s) for s in sales if isinstance(s, dict)]
+    except Exception as e:
+        logger.error("Error fetching today's deliveries: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to fetch today's deliveries")
 
 
 @router.get("/{sales_number}", response_model=DeliveryOrderResponse)
