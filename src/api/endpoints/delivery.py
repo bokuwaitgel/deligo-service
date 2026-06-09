@@ -21,6 +21,7 @@ from src.api.auth_utils import require_api_key
 from src.dependencies import get_delivery_repository
 from src.repositories.delivery import DeliveryRepository
 from src.services.delivery import (
+    OrderNotEditableError,
     _build_tracking_url,
     _geocode,
     _reverse_geocode,
@@ -448,6 +449,10 @@ async def update_delivery_location(
         return updated_order
     except HTTPException:
         raise
+    except OrderNotEditableError as e:
+        # Order was assigned to a driver (or moved past "Шинэ") since the client
+        # last loaded it — reject the stale edit with 409 Conflict.
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error(f"Error updating delivery location: {e}")
         raise HTTPException(status_code=500, detail="Failed to update delivery location")
@@ -570,15 +575,16 @@ async def delete_delivery_order(
     sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
-    """Soft-delete a delivery order by setting map_status to 'deleted'."""
+    """Hard-delete a delivery order: permanently remove the row from the database."""
     print("Delete request received for sales_id:", sales_id)
     existing = repo.get_by_sales_id(sales_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    updated = repo.update_partial(existing.sales_number, {"map_status": "deleted"})
-    if not updated:
+    sales_number = existing.sales_number
+    deleted = repo.delete(sales_number)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    return {"status": "deleted", "sales_number": existing.sales_number, "sales_id": sales_id}
+    return {"status": "deleted", "sales_number": sales_number, "sales_id": sales_id}
 
 # ---------------------------------------------------------------------------
 # User View Endpoints 

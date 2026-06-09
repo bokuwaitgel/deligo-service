@@ -7,11 +7,35 @@ from typing import Optional
 from schemas.database.delivery_db import DeliveryOrder
 from schemas.delivery import DeliveryOrderCreate, DeliveryOrderResponse, Location, MapStatus
 from src.repositories.delivery import DeliveryRepository
-from src.services.deligo_integration import push_address_update
+from src.services.deligo_integration import get_sales_detail, push_address_update
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.location import geocode_address, reverse_geocode
 
 logger = logging.getLogger(__name__)
+
+
+class OrderNotEditableError(Exception):
+    """Raised when an address edit is attempted on an order whose live Deligo
+    status no longer allows it (assigned to a driver, or past 'Шинэ')."""
+
+
+def _is_address_editable(
+    wfm_status_id: Optional[object],
+    status_code: Optional[str],
+    driver_id: Optional[str],
+) -> bool:
+    """Server-side mirror of the frontend ``isOrderAddressEditable`` rule.
+
+    Editable only while the order is still brand-new ("Шинэ" / wfm 1 / salesNew)
+    AND not yet assigned to a driver. Unknown status fails safe (not editable).
+    """
+    if driver_id:
+        return False
+    if wfm_status_id is not None and str(wfm_status_id).strip():
+        return str(wfm_status_id).strip() == "1"
+    if status_code:
+        return status_code == "salesNew"
+    return False
 
 
 def _build_tracking_url(sales_number: str) -> Optional[str]:
@@ -106,6 +130,40 @@ def get_delivery(repo: DeliveryRepository, sales_number: str) -> Optional[Delive
     return DeliveryOrderResponse.model_validate(order) if order else None
 
 
+def _compose_customer_address(location: Location, fallback: str = "") -> str:
+    """Build the customerAddress string pushed to Deligo.
+
+    Starts from the geocoded ``formatted_address`` and appends the manually
+    entered building details (street/khoroolol name, байр, орц, давхар, тоот)
+    that aren't part of the geocoded address. Empty fields are skipped, and a
+    value already contained in the address (e.g. a street the geocoder also
+    returned) isn't repeated. ``extra_notes`` is appended separately by
+    ``push_address_update``.
+    """
+    base = (location.formatted_address or fallback or "").strip()
+    parts: list[str] = [base] if base else []
+
+    def add(value: Optional[str], label: str = "") -> None:
+        if not value:
+            return
+        v = value.strip()
+        if not v:
+            return
+        # Don't repeat an unlabeled value already present in the address.
+        if not label and any(v.lower() in p.lower() for p in parts):
+            return
+        parts.append(f"{label}{v}" if label else v)
+
+    add(location.street_address)
+    b = location.building
+    if b:
+        add(b.building, "Байр: ")
+        add(b.entrance, "Орц: ")
+        add(b.floor, "Давхар: ")
+        add(b.door, "Тоот: ")
+    return ", ".join(parts)
+
+
 def update_location(
     repo: DeliveryRepository, sales_number: str, location: Location
 ) -> Optional[DeliveryOrderResponse]:
@@ -115,9 +173,36 @@ def update_location(
         return None
     if order.map_status == MapStatus.COMPLETED:
         return None
+
+    # Re-verify editability against the LIVE Deligo status before writing. The
+    # frontend gate uses the order it last fetched, which goes stale if the
+    # customer never refreshed — by the time they hit save the order may already
+    # be assigned to a driver. Pull fresh detail and re-check so an assigned
+    # order can't have its address changed. If Deligo is unreachable, fall back
+    # to the last-synced local status/driver.
+    if order.sales_id:
+        detail = get_sales_detail(str(order.sales_id), use_service_auth=True)
+        if detail is not None:
+            wfm_status_id = detail.get("wfm_status_id")
+            status_code = detail.get("status_code")
+            driver_id = detail.get("driver_id")
+        else:
+            wfm_status_id = None
+            status_code = order.status
+            driver_id = order.driver_id
+        if not _is_address_editable(wfm_status_id, status_code, driver_id):
+            logger.info(
+                "Rejecting address edit for sales_id=%s — not editable "
+                "(wfm=%s status_code=%s driver_id=%s)",
+                order.sales_id, wfm_status_id, status_code, driver_id,
+            )
+            raise OrderNotEditableError(
+                "Захиалга хуваарилагдсан тул хаягийг өөрчлөх боломжгүй."
+            )
+
     updated = repo.update_partial(sales_number, {"customer_location": location.model_dump(mode="json")})
     if updated and order.sales_id:
-        address = location.formatted_address or order.customer_address or ""
+        address = _compose_customer_address(location, fallback=order.customer_address or "")
         extra_notes = location.building.extra_notes if location.building else None
         push_address_update(str(order.sales_id), address, location.latitude, location.longitude, extra_notes=extra_notes)
     return DeliveryOrderResponse.model_validate(updated)
