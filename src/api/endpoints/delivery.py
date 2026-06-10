@@ -436,14 +436,22 @@ async def get_delivery_order_by_sales_id(
 async def update_delivery_location(
     body: LocationUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
+    x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
 ):
-    """Update delivery location with pre-geocoded coordinates."""
+    """Update delivery location with pre-geocoded coordinates.
+
+    A request carrying the driver's `X-Driver-Token` is treated as a driver edit
+    and bypasses the "still editable" gate, so a driver can correct the pin of an
+    order already assigned to them.
+    """
     existing = repo.get_by_sales_id(body.sales_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     location = Location(**body.model_dump(exclude={"sales_id"}))
     try:
-        updated_order = update_location(repo, existing.sales_number, location)
+        updated_order = update_location(
+            repo, existing.sales_number, location, is_driver=bool(x_driver_token)
+        )
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")
         return updated_order

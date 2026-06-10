@@ -165,9 +165,18 @@ def _compose_customer_address(location: Location, fallback: str = "") -> str:
 
 
 def update_location(
-    repo: DeliveryRepository, sales_number: str, location: Location
+    repo: DeliveryRepository,
+    sales_number: str,
+    location: Location,
+    *,
+    is_driver: bool = False,
 ) -> Optional[DeliveryOrderResponse]:
-    """Update location with pre-built coordinates. Returns None if not found or already completed."""
+    """Update location with pre-built coordinates. Returns None if not found or already completed.
+
+    ``is_driver`` skips the "still editable" gate: a driver may correct the pin
+    of an order already assigned to them, whereas customers/shops may only edit
+    while it is still "Шинэ" and unassigned.
+    """
     order = repo.get_by_sales_number(sales_number)
     if order is None:
         return None
@@ -179,8 +188,8 @@ def update_location(
     # customer never refreshed — by the time they hit save the order may already
     # be assigned to a driver. Pull fresh detail and re-check so an assigned
     # order can't have its address changed. If Deligo is unreachable, fall back
-    # to the last-synced local status/driver.
-    if order.sales_id:
+    # to the last-synced local status/driver. Drivers are exempt.
+    if order.sales_id and not is_driver:
         detail = get_sales_detail(str(order.sales_id), use_service_auth=True)
         if detail is not None:
             wfm_status_id = detail.get("wfm_status_id")
