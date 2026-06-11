@@ -783,7 +783,7 @@ async def get_driver_deliveries(
                     )
                 )
                 needs_patch = (
-                    (not existing.driver_id and driver_id) or
+                    bool(driver_id and existing.driver_id != driver_id) or
                     existing.customer_location is None or
                     has_missing_structured
                 )

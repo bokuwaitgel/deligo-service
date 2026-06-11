@@ -168,7 +168,11 @@ class DeliveryRepository:
 
         - sync_active = True iff the row's sales_number is in active_sales_numbers
           (i.e. it's still on the driver's list in the latest Deligo response,
-          regardless of WFM status).
+          regardless of WFM status). Rows in the active set are matched by
+          sales_number even when their stored driver_id is stale (reassignment,
+          or created without one) — Deligo is the source of truth for driver
+          assignment, so such rows are reclaimed: driver_id is overwritten and
+          sync_active flips back to True.
         - status = status_by_sn[sales_number] when present (the latest WFM status
           code from Deligo, e.g. "salesDelivery"). Rows not in the dict keep their
           previous status (the order is no longer in the driver's sync).
@@ -176,7 +180,8 @@ class DeliveryRepository:
         rows = (
             self.db_session.query(DeliveryOrder)
             .filter(
-                DeliveryOrder.driver_id == driver_id,
+                (DeliveryOrder.driver_id == driver_id)
+                | (DeliveryOrder.sales_number.in_(active_sales_numbers)),
                 DeliveryOrder.map_status != 'deleted',
             )
             .all()
@@ -184,6 +189,9 @@ class DeliveryRepository:
         changed = False
         for row in rows:
             desired_active = row.sales_number in active_sales_numbers
+            if desired_active and row.driver_id != driver_id:
+                row.driver_id = driver_id
+                changed = True
             if row.sync_active != desired_active:
                 row.sync_active = desired_active
                 changed = True

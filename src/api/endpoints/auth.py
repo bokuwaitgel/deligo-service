@@ -221,7 +221,8 @@ def _enrich_with_detail_and_location(
                 continue
 
             patch: Dict[str, Any] = {}
-            if scope_driver_id and not local.driver_id:
+            # Deligo is source of truth for driver assignment — overwrite on reassignment.
+            if scope_driver_id and local.driver_id != scope_driver_id:
                 patch["driver_id"] = scope_driver_id
             # Company scope is the main shop identifier now.
             if scope_company_id and local.company_id != scope_company_id:
