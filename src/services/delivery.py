@@ -186,19 +186,38 @@ def update_location(
     # Re-verify editability against the LIVE Deligo status before writing. The
     # frontend gate uses the order it last fetched, which goes stale if the
     # customer never refreshed — by the time they hit save the order may already
-    # be assigned to a driver. Pull fresh detail and re-check so an assigned
-    # order can't have its address changed. If Deligo is unreachable, fall back
-    # to the last-synced local status/driver. Drivers are exempt.
+    # be assigned to a driver. Drivers are exempt.
     if order.sales_id and not is_driver:
-        detail = get_sales_detail(str(order.sales_id), use_service_auth=True)
-        if detail is not None:
-            wfm_status_id = detail.get("wfm_status_id")
-            status_code = detail.get("status_code")
-            driver_id = detail.get("driver_id")
-        else:
-            wfm_status_id = None
-            status_code = order.status
-            driver_id = order.driver_id
+        # Local row already knows it's assigned / past "Шинэ" — reject without
+        # the Deligo round-trip.
+        if order.driver_id or (order.status and order.status != "salesNew"):
+            logger.info(
+                "Rejecting address edit for sales_id=%s — local row not editable "
+                "(status=%s driver_id=%s)",
+                order.sales_id, order.status, order.driver_id,
+            )
+            raise OrderNotEditableError(
+                "Захиалга хуваарилагдсан тул хаягийг өөрчлөх боломжгүй."
+            )
+
+        # skip_cache: the shared detail cache holds entries up to 5 min old that
+        # may predate the driver assignment — the gate must see the live status.
+        detail = get_sales_detail(str(order.sales_id), use_service_auth=True, skip_cache=True)
+        if detail is None:
+            # Fail CLOSED. Falling back to the (stale) local row here let a
+            # just-assigned order through whenever Deligo flaked: first save
+            # attempt got the live 409, the retry hit the fallback and saved.
+            logger.warning(
+                "Rejecting address edit for sales_id=%s — live status unavailable",
+                order.sales_id,
+            )
+            raise OrderNotEditableError(
+                "Захиалгын төлөв шалгагдсангүй тул хаягийг өөрчлөх боломжгүй. "
+                "Хэсэг хугацааны дараа дахин оролдоно уу."
+            )
+        wfm_status_id = detail.get("wfm_status_id")
+        status_code = detail.get("status_code")
+        driver_id = detail.get("driver_id")
         if not _is_address_editable(wfm_status_id, status_code, driver_id):
             logger.info(
                 "Rejecting address edit for sales_id=%s — not editable "

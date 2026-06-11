@@ -31,6 +31,10 @@ class Location(BaseModel):
     country: Optional[str] = None
     postal_code: Optional[str] = None
     building: Optional[Building] = None
+    # Free-text memo the driver writes for themselves when re-pinning an order
+    # (e.g. "2-р орцны ард, хүрэн хаалга"). Stored in the customer_location JSON
+    # blob and shown back on the driver's order card.
+    driver_note: Optional[str] = None
 
 
 class DriverLocation(BaseModel):

@@ -332,17 +332,22 @@ def change_sales_status(sales_id: str, status_id: int, driver_token: Optional[st
     return True
 
 
-def get_sales_detail(sales_id: str, *, use_service_auth: bool = False) -> Optional[Dict[str, Any]]:
+def get_sales_detail(sales_id: str, *, use_service_auth: bool = False, skip_cache: bool = False) -> Optional[Dict[str, Any]]:
     """Fetch structured sales detail via POST /api/sales/get.
 
     The deligo API keys this lookup by sales_id (the `id` field), not by
     sales_number — passing sales_number returns no data.
+
+    ``skip_cache`` forces a live fetch — used by the address-edit gate, where a
+    detail cached up to DELIGO_DETAIL_CACHE_TTL (5 min) ago may predate the
+    driver assignment and would let a locked order through.
     """
     if not sales_id:
         return None
-    cached = _get_cached_detail(sales_id)
-    if cached is not None:
-        return cached
+    if not skip_cache:
+        cached = _get_cached_detail(sales_id)
+        if cached is not None:
+            return cached
     print(f"[Deligo] POST /api/sales/get  id={sales_id}")
     r = _post_with_retry("/api/sales/get", {"id": sales_id}, use_service_auth=use_service_auth)
 
