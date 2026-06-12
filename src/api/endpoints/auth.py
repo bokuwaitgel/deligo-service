@@ -512,10 +512,10 @@ def shop_orders_endpoint(
             include_status_desc=payload.include_status_desc,
             geocode_new=False,
         )
-        # Only include orders where sync_active is True in the local DB
-        sales_numbers = [str(it.get("sales_number", "")) for it in items if it.get("sales_number")]
-        local_rows = {row.sales_number: row for row in repo.get_by_sales_numbers(sales_numbers)}
-        items = [it for it in items if local_rows.get(str(it.get("sales_number"))) and local_rows[str(it.get("sales_number"))].sync_active]
+        # Show exactly what Deligo returns for the company — no local sync_active
+        # gate. Deligo is the source of truth for the company's order list; the
+        # previous filter dropped any order the driver endpoint hadn't synced
+        # locally yet, which hid valid orders from the shop dashboard.
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
     return {"status": "ok", "data": items, "scope_id": company_id}

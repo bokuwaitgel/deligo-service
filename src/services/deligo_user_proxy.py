@@ -210,12 +210,16 @@ def shop_orders(
     page_size: int = 50,
     created_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    # Filter to today's created_date by default, same as the driver list — keeps
-    # the shop dashboard scoped to today's orders at the Deligo query level. An
-    # explicit created_date (e.g. date search) still overrides it.
+    # Do NOT force today's date on the shop list. The filter is on t6.created_date
+    # (the sales/registration day), so defaulting to today silently hides every
+    # order registered on a previous day — e.g. orders created late on 2026-06-12
+    # vanish the moment the clock rolls over to 2026-06-13. The shop dashboard
+    # wants the company's recent orders regardless of registration day (paging
+    # still caps the result). A caller-supplied created_date (date search) is
+    # honored when present.
     return _order_list(
         token, "es.company_id", company_id, offset, page_size,
-        created_date=created_date, default_today=True,
+        created_date=created_date, default_today=False,
     )
 
 
