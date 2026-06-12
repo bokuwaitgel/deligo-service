@@ -210,16 +210,15 @@ def shop_orders(
     page_size: int = 50,
     created_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    # Do NOT force today's date on the shop list. The filter is on t6.created_date
-    # (the sales/registration day), so defaulting to today silently hides every
-    # order registered on a previous day — e.g. orders created late on 2026-06-12
-    # vanish the moment the clock rolls over to 2026-06-13. The shop dashboard
-    # wants the company's recent orders regardless of registration day (paging
-    # still caps the result). A caller-supplied created_date (date search) is
-    # honored when present.
+    # Scope the shop list to today by t6.created_date so it matches the Deligo
+    # date-filtered result exactly (no unfiltered "recent orders" leaking in from
+    # previous days). A caller-supplied created_date (date search) overrides the
+    # default. NOTE: t6.created_date is the delivery/status-row day, not the raw
+    # sales registration time — an order created late on day N whose first status
+    # row lands after midnight is dated day N+1 and shows under that day.
     return _order_list(
         token, "es.company_id", company_id, offset, page_size,
-        created_date=created_date, default_today=False,
+        created_date=created_date, default_today=True,
     )
 
 
