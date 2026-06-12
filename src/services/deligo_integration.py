@@ -19,10 +19,19 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import date
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import httpx
+
+# Business runs in Mongolia; "today" for sales-day filters must be the
+# Asia/Ulaanbaatar calendar day, not the server-local (UTC) day.
+_MN_TZ = ZoneInfo("Asia/Ulaanbaatar")
+
+
+def _mn_today_iso() -> str:
+    return datetime.now(_MN_TZ).strftime("%Y-%m-%d")
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +204,7 @@ def get_driver_sales(
                 "dataType": "integer",
             },
             "TO_CHAR(t6.created_date, 'YYYY-MM-DD')": {
-                "value": date.today().isoformat(),
+                "value": _mn_today_iso(),
                 "operator": "=",
             },
         },
@@ -246,7 +255,7 @@ def get_company_sales(
     phone search from a single call. wfm_status_id is restricted to the delivery
     lifecycle statuses (assigned → delivered / deferred / cancelled).
     """
-    day = target_date or date.today().isoformat()
+    day = target_date or _mn_today_iso()
     payload = {
         "criteria": {
             "es.wfm_status_id": {

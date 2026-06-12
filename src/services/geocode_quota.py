@@ -8,21 +8,30 @@ customer_location; it can be geocoded on a future day when quota resets.
 Defaults to 200 geocode attempts per driver per day. Override via the
 DRIVER_DAILY_GEOCODE_LIMIT env var.
 
-Counter is in-process and resets at server-local midnight. With multiple
-uvicorn workers, each worker tracks its own counts (so the effective limit
-becomes N_workers * DAILY_GEOCODE_LIMIT). Move to Redis if a strict
-cross-worker cap is required.
+Counter is in-process and resets at Mongolia (Asia/Ulaanbaatar) midnight,
+matching the business day. With multiple uvicorn workers, each worker tracks
+its own counts (so the effective limit becomes N_workers * DAILY_GEOCODE_LIMIT).
+Move to Redis if a strict cross-worker cap is required.
 """
 from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 from threading import Lock
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 DAILY_GEOCODE_LIMIT = int(os.getenv("DRIVER_DAILY_GEOCODE_LIMIT", "200"))
+
+# Quota day rolls over at Mongolia midnight, not server-local midnight.
+_MN_TZ = ZoneInfo("Asia/Ulaanbaatar")
+
+
+def _mn_today() -> date:
+    return datetime.now(_MN_TZ).date()
+
 
 _counts: dict[str, tuple[date, int]] = {}
 _lock = Lock()
@@ -40,7 +49,7 @@ def consume_geocode_quota(driver_id: object) -> bool:
     if not driver_id:
         return True
     key = str(driver_id)
-    today = date.today()
+    today = _mn_today()
     with _lock:
         entry = _counts.get(key)
         if entry is None or entry[0] != today:
@@ -63,7 +72,7 @@ def get_geocode_usage(driver_id: object) -> int:
     if not driver_id:
         return 0
     key = str(driver_id)
-    today = date.today()
+    today = _mn_today()
     with _lock:
         entry = _counts.get(key)
         if entry is None or entry[0] != today:
