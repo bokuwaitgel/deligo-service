@@ -232,7 +232,14 @@ def update_location(
     if updated and order.sales_id:
         address = _compose_customer_address(location, fallback=order.customer_address or "")
         extra_notes = location.building.extra_notes if location.building else None
-        push_address_update(str(order.sales_id), address, location.latitude, location.longitude, extra_notes=extra_notes)
+        push_address_update(
+            str(order.sales_id),
+            address,
+            location.latitude,
+            location.longitude,
+            extra_notes=extra_notes,
+            driver_note=location.driver_note,
+        )
     return DeliveryOrderResponse.model_validate(updated)
 
 

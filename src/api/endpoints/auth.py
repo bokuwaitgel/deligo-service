@@ -26,7 +26,7 @@ from src.services.deligo_user_proxy import (
     user_info,
 )
 from src.services.blacklist import is_driver_blacklisted
-from src.services.deligo_integration import CLOSED_WFM_STATUS_IDS, STATUS_CODE_MAP
+from src.services.deligo_integration import CLOSED_WFM_STATUS_IDS, STATUS_CODE_MAP, get_status_description_service
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.delivery import _geocode, _build_tracking_url
 
@@ -554,13 +554,10 @@ def change_status_endpoint(
 def get_status_description_endpoint(
     sales_id: str,
     status_id: Optional[int] = None,
-    token: str = Depends(get_bearer_token),
 ):
-    _require_token(token)
-    try:
-        data = get_status_description(token, sales_id, status_id=status_id)
-    except DeligoApiError as exc:
-        raise _handle_deligo_error(exc) from exc
+    # Public: uses the service account, no user token required. Customer tracking
+    # page fetches handoff proof for countryside completed orders without auth.
+    data = get_status_description_service(sales_id, status_id=status_id)
     if data is None:
         raise HTTPException(status_code=404, detail="No status description found")
     return {"status": "ok", "data": data}

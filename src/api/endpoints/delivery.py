@@ -578,12 +578,13 @@ class _DeleteDeliveryRequest(BaseModel):
     sales_id: str = Field(..., description="Sales ID of the delivery order")
 
 
-@router.post("/delete/{sales_id}", dependencies=[Depends(require_api_key)])
+@router.post("/delete", dependencies=[Depends(require_api_key)])
 async def delete_delivery_order(
-    sales_id: str,
+    payload: _DeleteDeliveryRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Hard-delete a delivery order: permanently remove the row from the database."""
+    sales_id = payload.sales_id
     print("Delete request received for sales_id:", sales_id)
     existing = repo.get_by_sales_id(sales_id)
     if not existing:

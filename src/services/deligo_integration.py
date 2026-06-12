@@ -425,10 +425,13 @@ def push_address_update(
     latitude: float,
     longitude: float,
     extra_notes: Optional[str] = None,
+    driver_note: Optional[str] = None,
 ) -> bool:
     """Notify Deligo of an address/coordinate change via POST /api/sales/update/address.
 
-    Best-effort: logs on failure but never raises.
+    Best-effort: logs on failure but never raises. The driver's pin-edit note is
+    appended to ``customerAddress`` (labeled "Жолоочийн тэмдэглэл") so it surfaces
+    on the Deligo main system alongside the address.
     """
     print(f"[Deligo] POST /api/sales/update/address  id={sales_id}  lat={latitude}  lng={longitude}")
     payload: Dict[str, Any] = {
@@ -439,6 +442,8 @@ def push_address_update(
     }
     if extra_notes:
         payload["customerAddress"] += f" ({extra_notes})"
+    if driver_note and driver_note.strip():
+        payload["customerAddress"] += f" [Жолоочийн тэмдэглэл: {driver_note.strip()}]"
     r = _post_with_retry("/api/sales/update/address", payload, use_service_auth=True)
     if r is None or r.status_code != 200:
         status = r.status_code if r is not None else "no response"
