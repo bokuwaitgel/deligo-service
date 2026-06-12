@@ -492,7 +492,40 @@ async def update_delivery_address(
     except Exception as e:
         logger.error(f"Error updating delivery address: {e}")
         raise HTTPException(status_code=500, detail="Failed to update delivery address")
-    
+
+
+class _GeocodeCacheRequest(BaseModel):
+    sales_id: str = Field(..., description="Sales ID of the delivery order")
+    latitude: float
+    longitude: float
+    formatted_address: Optional[str] = None
+
+
+@router.post("/location/cache", dependencies=[Depends(require_api_key)])
+async def cache_geocoded_location(
+    body: _GeocodeCacheRequest,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Persist a frontend-geocoded coordinate into the local row only.
+
+    Unlike /location this does NOT push to Deligo and skips the editability gate —
+    it just caches the coordinate the shop map derived from the customer_address
+    so later loads reuse the pin instead of re-billing Google for the same address.
+    """
+    existing = repo.get_by_sales_id(body.sales_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    loc = dict(existing.customer_location) if isinstance(existing.customer_location, dict) else {}
+    loc["latitude"] = body.latitude
+    loc["longitude"] = body.longitude
+    if body.formatted_address and not loc.get("formatted_address"):
+        loc["formatted_address"] = body.formatted_address
+    updated = repo.update_partial(existing.sales_number, {"customer_location": loc})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    return {"status": "ok", "sales_number": existing.sales_number}
+
+
 @router.post("/{sales_number}/start", dependencies=[Depends(require_api_key)])
 async def start_delivery_order(
     sales_number: str,
@@ -578,13 +611,12 @@ class _DeleteDeliveryRequest(BaseModel):
     sales_id: str = Field(..., description="Sales ID of the delivery order")
 
 
-@router.post("/delete", dependencies=[Depends(require_api_key)])
+@router.post("/delete/{sales_id}", dependencies=[Depends(require_api_key)])
 async def delete_delivery_order(
-    payload: _DeleteDeliveryRequest,
+    sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Hard-delete a delivery order: permanently remove the row from the database."""
-    sales_id = payload.sales_id
     print("Delete request received for sales_id:", sales_id)
     existing = repo.get_by_sales_id(sales_id)
     if not existing:
