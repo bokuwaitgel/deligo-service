@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,6 +18,11 @@ from zoneinfo import ZoneInfo
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Strict YYYY-MM-DD guard for created_date values that get embedded into the
+# Deligo SQL criteria key (COALESCE expression), to keep them from carrying
+# arbitrary SQL.
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 DELIGO_API_URL = os.getenv("DELIGO_API_URL", "https://api.deligo.mn").rstrip("/")
 _HTTP_TIMEOUT_SECONDS = float(os.getenv("DELIGO_HTTP_TIMEOUT", "20"))
@@ -30,13 +36,13 @@ _PROXY_DETAIL_CACHE_TTL = int(os.getenv("DELIGO_DETAIL_CACHE_TTL", "300"))  # 0 
 _PROXY_DETAIL_CACHE_MAX = 2000
 
 # Short-lived cache for /api/sales/integration list responses.
-# Key: (criteria_field, value, created_date, offset, page_size)
+# Key: (criteria_field, value, created_date, offset, page_size, include_null_date)
 # 40 drivers × 960 refreshes/day → with 60s TTL this cuts to ~40 × 480 = 19,200 actual calls/day.
-_LIST_CACHE: Dict[Tuple[str, str, str, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
+_LIST_CACHE: Dict[Tuple[str, str, str, int, int, bool], Tuple[float, List[Dict[str, Any]]]] = {}
 _LIST_CACHE_TTL = int(os.getenv("DELIGO_LIST_CACHE_TTL", "60"))  # seconds; 0 = disabled
 
 
-def _get_list_cache(key: Tuple[str, str, str, int, int]) -> Optional[List[Dict[str, Any]]]:
+def _get_list_cache(key: Tuple[str, str, str, int, int, bool]) -> Optional[List[Dict[str, Any]]]:
     if not _LIST_CACHE_TTL:
         return None
     entry = _LIST_CACHE.get(key)
@@ -45,7 +51,7 @@ def _get_list_cache(key: Tuple[str, str, str, int, int]) -> Optional[List[Dict[s
     return None
 
 
-def _set_list_cache(key: Tuple[str, str, str, int, int], data: List[Dict[str, Any]]) -> None:
+def _set_list_cache(key: Tuple[str, str, str, int, int, bool], data: List[Dict[str, Any]]) -> None:
     if not _LIST_CACHE_TTL:
         return
     if len(_LIST_CACHE) >= 500:
@@ -136,6 +142,7 @@ def _order_list(
     page_size: int,
     created_date: Optional[str] = None,
     default_today: bool = True,
+    include_null_date: bool = False,
 ) -> List[Dict[str, Any]]:
     criteria: Dict[str, Any] = {
         criteria_field: {
@@ -146,17 +153,30 @@ def _order_list(
     }
     # Default the date filter to today unless the caller opts out (default_today=
     # False). The filter is on t6.created_date, which is NULL for orders that have
-    # no delivery/status row yet (e.g. brand-new unassigned orders), so applying it
-    # silently drops those orders. The shop list wants those too, so it opts out.
+    # no delivery/status row yet (e.g. brand-new unassigned orders), so a plain
+    # TO_CHAR equality silently drops those orders. Callers that want those too
+    # (the shop list) pass include_null_date=True, which COALESCEs the NULL date
+    # to the target day so NULL-date rows match alongside the day's real rows.
     if not created_date and default_today:
         created_date = datetime.now(ZoneInfo("Asia/Ulaanbaatar")).strftime("%Y-%m-%d")
     if created_date:
+        # created_date is embedded into the SQL key expression below when
+        # COALESCE is used, so enforce a strict YYYY-MM-DD shape to keep it
+        # from carrying arbitrary SQL.
+        if not _DATE_RE.match(created_date):
+            raise ValueError(f"created_date must be YYYY-MM-DD, got {created_date!r}")
         print(f"[Deligo] Adding created_date filter to criteria: {created_date}")
         # Deligo expects this exact key — TO_CHAR on the SQL side normalizes the
         # timestamp column to a YYYY-MM-DD string for equality comparison.
         # Skip the filter entirely when no date is provided; Deligo rejects
         # criteria entries with a null value ("must contain" error).
-        criteria["TO_CHAR(t6.created_date, 'YYYY-MM-DD')"] = {
+        if include_null_date:
+            date_key = (
+                f"COALESCE(TO_CHAR(t6.created_date, 'YYYY-MM-DD'), '{created_date}')"
+            )
+        else:
+            date_key = "TO_CHAR(t6.created_date, 'YYYY-MM-DD')"
+        criteria[date_key] = {
             "value": created_date,
             "operator": "=",
             }
@@ -165,7 +185,10 @@ def _order_list(
         "paging": {"offset": offset, "pageSize": page_size},
     }
     date_suffix = f" created_date={created_date}" if created_date else ""
-    cache_key = (criteria_field, str(value), created_date or "", offset, page_size)
+    cache_key = (
+        criteria_field, str(value), created_date or "",
+        offset, page_size, include_null_date,
+    )
     cached_list = _get_list_cache(cache_key)
     if cached_list is not None:
         print(f"[Deligo] LIST CACHE HIT  {criteria_field}={value}{date_suffix}  offset={offset} pageSize={page_size}")
@@ -218,7 +241,7 @@ def shop_orders(
     # row lands after midnight is dated day N+1 and shows under that day.
     return _order_list(
         token, "es.company_id", company_id, offset, page_size,
-        created_date=created_date, default_today=True,
+        created_date=created_date, default_today=True, include_null_date=True,
     )
 
 
