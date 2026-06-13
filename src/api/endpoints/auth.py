@@ -405,6 +405,20 @@ def driver_orders_endpoint(
             include_status_desc=payload.include_status_desc,
         )
 
+        # Expose the driver's saved delivery sequence (sort_order) on each item.
+        # Deligo's list payload doesn't carry it, so the client map can't show the
+        # sequence number without this — pull it from the local rows.
+        sort_sales_numbers = [str(it["sales_number"]) for it in items if it.get("sales_number")]
+        sort_by_sn = {
+            row.sales_number: row.sort_order
+            for row in repo.get_by_sales_numbers(sort_sales_numbers)
+            if row.sort_order is not None
+        }
+        for it in items:
+            sn = _as_str(it.get("sales_number"))
+            if sn and sn in sort_by_sn:
+                it["sort_order"] = sort_by_sn[sn]
+
         # Persist sync membership (any order in the driver's list) + latest WFM
         # status code. The "open/in-progress" filter is applied at read time
         # against the status column, not here.
