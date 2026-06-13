@@ -666,9 +666,14 @@ async def track_delivery_order(
 
         # For driver-only sub-statuses fetch the saved proof (text + image) so the
         # customer can see why the delivery wasn't completed on this attempt.
+        # Countryside orders also carry proof on "Хүргэсэн" (wfm 3): the driver
+        # records the inter-province carrier contact + handoff photo there, so the
+        # customer tracking page must fetch it too (mirrors the shop dashboard).
         _DRIVER_ONLY_WITH_PROOF = {13, 14, 15, 16, 17, 23}
         wfm_id = _as_int((detail or {}).get("wfm_status_id"))
-        if wfm_id in _DRIVER_ONLY_WITH_PROOF and delivery_order.sales_id:
+        is_countryside = bool((detail or {}).get("is_country") in {1, True, "1", "true"})
+        needs_proof = wfm_id in _DRIVER_ONLY_WITH_PROOF or (wfm_id == 3 and is_countryside)
+        if needs_proof and delivery_order.sales_id:
             try:
                 status_desc = get_status_description_service(str(delivery_order.sales_id), wfm_id)
                 if status_desc and (status_desc.get("description") or status_desc.get("file_path")):
