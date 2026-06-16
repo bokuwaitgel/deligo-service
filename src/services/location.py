@@ -263,7 +263,14 @@ def _reverse_geocode_cached(
             building=None,
         )
 
-    return parse_geocode_result(_best_result(results))
+    loc = parse_geocode_result(_best_result(results))
+    # parse_geocode_result fills coords from Google's geometry.location, which is
+    # the SNAPPED centroid of the matched feature (street/premise), not the pin
+    # the user actually tapped. Restore the raw input coords so the stored point
+    # matches the tap — mirrors the frontend reverseGeocode() behavior.
+    loc.latitude = lat
+    loc.longitude = lng
+    return loc
 
 
 _MN_BOUNDS = {
