@@ -62,6 +62,7 @@ class DeliveryOrderCreate(BaseModel):
 
 class LocationUpdateRequest(Location):
     sales_id: str = Field(..., description="Sales ID of the delivery order")
+    is_customer: bool = Field(default=False, description="True when a customer/shop submits the edit; enables the live editability gate")
 
 
 class AddressUpdateRequest(BaseModel):

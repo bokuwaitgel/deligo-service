@@ -447,17 +447,18 @@ async def update_delivery_location(
     existing = repo.get_by_sales_id(body.sales_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    location = Location(**body.model_dump(exclude={"sales_id"}))
+    location = Location(**body.model_dump(exclude={"sales_id", "is_customer"}))
     try:
         is_driver = bool(x_driver_token)
         updated_order = update_location(
             repo, existing.sales_number, location,
             is_driver=is_driver,
-            # No driver token → request is a customer/shop edit. Turning this on
-            # makes update_location re-verify editability against the LIVE Deligo
-            # status (rejecting an order assigned to a driver since the client last
-            # loaded it). Drivers stay exempt.
-            is_customer=not is_driver,
+            # Customer/shop edit → re-verify editability against the LIVE Deligo
+            # status (reject an order assigned to a driver since the client last
+            # loaded it). The client passes is_customer, but we also force it on
+            # for any non-driver request so a forged is_customer=false can't skip
+            # the gate. Drivers carry a token and stay exempt.
+            is_customer=body.is_customer or not is_driver,
         )
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")

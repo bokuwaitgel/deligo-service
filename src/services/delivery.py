@@ -184,6 +184,8 @@ def update_location(
     if order.map_status == MapStatus.COMPLETED:
         return None
 
+    print(is_driver, is_customer)
+
     # Re-verify editability against the LIVE Deligo status before writing. The
     # frontend gate uses the order it last fetched, which goes stale if the
     # customer never refreshed — by the time they hit save the order may already
