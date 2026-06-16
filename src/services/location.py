@@ -335,61 +335,6 @@ def _extract_district_from_query(address: str) -> str | None:
     return None
 
 
-def _places_text_search(
-    query: str,
-    api_key: str,
-    *,
-    location_bias: dict | None = None,
-    location_restriction: dict | None = None,
-) -> Location | None:
-    """Call Places API (New) searchText and return a Location or None."""
-    body: dict = {"textQuery": query, "languageCode": "mn"}
-    if location_bias:
-        body["locationBias"] = location_bias
-    elif location_restriction:
-        body["locationRestriction"] = location_restriction
-    try:
-        # Endpoint must match the body shape: searchText uses {"textQuery": ...}
-        # and returns {"places": [...]}. The previous URL pointed at
-        # places:autocomplete, which expects {"input": ...} and returns
-        # {"suggestions": [...]} — so it silently returned no matches.
-        resp = httpx.post(
-            "https://places.googleapis.com/v1/places:searchText",
-            json=body,
-            headers={
-                "X-Goog-Api-Key": api_key,
-                "X-Goog-FieldMask": "places.location,places.formattedAddress,places.id",
-                "Content-Type": "application/json",
-            },
-            timeout=5,
-        )
-        if resp.status_code != 200:
-            logger.warning("Places API (New) returned %s for %r", resp.status_code, query)
-            return None
-        places = resp.json().get("places", [])
-        if not places:
-            return None
-        first = places[0]
-        loc_data = first.get("location", {})
-        lat = loc_data.get("latitude")
-        lng = loc_data.get("longitude")
-        if not lat or not lng:
-            return None
-        if not (_MN_BOUNDS["southwest"]["lat"] <= lat <= _MN_BOUNDS["northeast"]["lat"]):
-            return None
-        return _location_from_find_place(
-            {
-                "geometry": {"location": {"lat": lat, "lng": lng}},
-                "formatted_address": first.get("formattedAddress", ""),
-                "address_components": [],
-            },
-            query,
-        )
-    except Exception as e:
-        logger.warning("Places API (New) text search failed for %r: %s", query, e)
-        return None
-
-
 def _ub_district_keywords() -> list[str]:
     return [
         "хан-уул", "khan-uul", "khan uul",
