@@ -202,7 +202,7 @@ def update_location(
 
         # skip_cache: the shared detail cache holds entries up to 5 min old that
         # may predate the driver assignment — the gate must see the live status.
-        detail = get_sales_detail(str(order.sales_id), use_service_auth=True, skip_cache=True)
+        detail = get_sales_detail(str(order.sales_id), use_service_auth=False, skip_cache=True)
         if detail is None:
             # Fail CLOSED. Falling back to the (stale) local row here let a
             # just-assigned order through whenever Deligo flaked: first save
