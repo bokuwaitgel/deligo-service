@@ -170,6 +170,7 @@ def update_location(
     location: Location,
     *,
     is_driver: bool = False,
+    is_customer: bool = False
 ) -> Optional[DeliveryOrderResponse]:
     """Update location with pre-built coordinates. Returns None if not found or already completed.
 
@@ -187,7 +188,7 @@ def update_location(
     # frontend gate uses the order it last fetched, which goes stale if the
     # customer never refreshed — by the time they hit save the order may already
     # be assigned to a driver. Drivers are exempt.
-    if order.sales_id and not is_driver:
+    if order.sales_id and not is_driver and is_customer:
         # Local row already knows it's assigned / past "Шинэ" — reject without
         # the Deligo round-trip.
         if order.driver_id or (order.status and order.status != "salesNew"):
