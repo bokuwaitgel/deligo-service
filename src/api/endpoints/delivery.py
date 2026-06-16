@@ -396,10 +396,11 @@ async def get_delivery_order(
     """Get a delivery order by sales number, enriched with deligo sales detail (includes driver)."""
     try:
         delivery_order = get_delivery(repo, sales_number)
+        
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
         if delivery_order.sales_id:
-            detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True)
+            detail = get_sales_detail(str(delivery_order.sales_id), use_service_auth=True)
             if detail:
                 delivery_order.detail = detail  # type: ignore[attr-defined]
         return delivery_order
@@ -444,7 +445,7 @@ async def update_delivery_location(
     and bypasses the "still editable" gate, so a driver can correct the pin of an
     order already assigned to them.
     """
-    existing = repo.get_by_sales_id(body.sales_id)
+    existing = repo.get_by_sales_id(str(body.sales_id))
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     location = Location(**body.model_dump(exclude={"sales_id", "is_customer"}))
@@ -660,7 +661,7 @@ async def track_delivery_order(
             delivery_order = DeliveryOrderResponse.model_validate(created)
         if delivery_order.map_status == "deleted":
             raise HTTPException(status_code=404, detail="Delivery order not found")
-        detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True) if delivery_order.sales_id else None
+        detail = get_sales_detail(str(delivery_order.sales_id), use_service_auth=True) if delivery_order.sales_id else None
         if detail:
             delivery_order.detail = detail  # type: ignore[attr-defined]
 

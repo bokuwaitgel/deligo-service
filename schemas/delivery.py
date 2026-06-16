@@ -61,7 +61,7 @@ class DeliveryOrderCreate(BaseModel):
 
 
 class LocationUpdateRequest(Location):
-    sales_id: str = Field(..., description="Sales ID of the delivery order")
+    sales_id: str | int = Field(..., description="Sales ID of the delivery order")
     is_customer: bool = Field(default=False, description="True when a customer/shop submits the edit; enables the live editability gate")
 
 
@@ -84,7 +84,7 @@ class DeliveryOrderResponse(BaseModel):
     model_config = {"from_attributes": True}
 
     sales_number: str
-    sales_id: Optional[str] = None
+    sales_id: Optional[str | int] = None
     store_id: str
     company_id: Optional[str] = None
     customer_address: str
