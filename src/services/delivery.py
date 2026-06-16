@@ -166,7 +166,7 @@ def _compose_customer_address(location: Location, fallback: str = "") -> str:
 
 def update_location(
     repo: DeliveryRepository,
-    sales_number: str,
+    sales_number: str | int,
     location: Location,
     *,
     is_driver: bool = False,
@@ -178,6 +178,8 @@ def update_location(
     of an order already assigned to them, whereas customers/shops may only edit
     while it is still "Шинэ" and unassigned.
     """
+    sales_number = str(sales_number)
+
     order = repo.get_by_sales_number(sales_number)
     if order is None:
         return None
