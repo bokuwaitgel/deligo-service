@@ -403,6 +403,13 @@ def driver_orders_endpoint(
             scope_driver_id=driver_id,
             include_detail=payload.include_detail,
             include_status_desc=payload.include_status_desc,
+            # Don't block the list response on Google geocoding. New orders are
+            # created with customer_location=None here; the driver map renders
+            # immediately and the frontend backfills missing coords in the
+            # background (backfillMissingLocations -> updateDeliveryAddress).
+            # Sequential per-order geocoding on this path was the cause of the
+            # multi-second "Хүргэлтийн мэдээлэл ачаалж байна..." spinner stall.
+            geocode_new=False,
         )
 
         # Expose the driver's saved delivery sequence (sort_order) on each item.
