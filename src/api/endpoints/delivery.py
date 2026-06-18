@@ -447,6 +447,13 @@ async def update_delivery_location(
     """
     existing = repo.get_by_sales_id(str(body.sales_id))
     if not existing:
+        # Order is on the driver's Deligo list but has no local row yet (driver
+        # opened the app and went straight to re-pinning before any sync created
+        # it). Pull the detail from Deligo and upsert on the fly so the save
+        # succeeds — mirrors the GET /tracking miss path.
+        detail = get_sales_detail(str(body.sales_id), use_service_auth=True)
+        existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
+    if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     location = Location(**body.model_dump(exclude={"sales_id", "is_customer"}))
     try:
@@ -482,6 +489,11 @@ async def update_delivery_address(
 ):
     """Update delivery location by re-geocoding a new address."""
     existing = repo.get_by_sales_id(address_update.sales_id)
+    if not existing:
+        # No local row yet — pull from Deligo and upsert so first-time geocode
+        # backfill from the driver/shop view works instead of 404-ing.
+        detail = get_sales_detail(str(address_update.sales_id), use_service_auth=True)
+        existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     try:
@@ -522,6 +534,11 @@ async def cache_geocoded_location(
     so later loads reuse the pin instead of re-billing Google for the same address.
     """
     existing = repo.get_by_sales_id(body.sales_id)
+    if not existing:
+        # No local row yet — pull from Deligo and upsert so the shop map can
+        # cache its geocoded pin on first load instead of 404-ing.
+        detail = get_sales_detail(str(body.sales_id), use_service_auth=True)
+        existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     loc = dict(existing.customer_location) if isinstance(existing.customer_location, dict) else {}
@@ -608,6 +625,11 @@ async def update_delivery_eta(
 ):
     """Driver view calls this to persist the calculated ETA (in minutes) for a delivery."""
     existing = repo.get_by_sales_id(payload.sales_id)
+    if not existing:
+        # No local row yet — pull from Deligo and upsert so the driver view's
+        # ETA writes land instead of silently 404-ing.
+        detail = get_sales_detail(str(payload.sales_id), use_service_auth=True)
+        existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     updated = repo.update_partial(existing.sales_number, {"eta_minutes": payload.eta_minutes})
