@@ -3,10 +3,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
+import time
 from functools import lru_cache
 from typing import Any, cast
 
 import googlemaps
+import googlemaps.exceptions
 import httpx
 from dotenv import load_dotenv
 
@@ -91,8 +94,51 @@ def _get_client() -> googlemaps.Client:
         key = os.getenv("GOOGLE_MAPS_API_KEY")
         if not key:
             raise RuntimeError("GOOGLE_MAPS_API_KEY is not set")
-        _gmaps = googlemaps.Client(key=key)
+        # retry_over_query_limit=False: on OVER_QUERY_LIMIT the client raises
+        # immediately instead of silently retrying the same call ~10x until
+        # retry_timeout elapses. Those retries were billed AND counted against
+        # quota, turning one capped call into ~10 wasted requests (the storm
+        # seen in the logs). queries_per_second throttles burst load.
+        _gmaps = googlemaps.Client(
+            key=key,
+            retry_over_query_limit=False,
+            retry_timeout=10,
+            queries_per_second=10,
+        )
     return _gmaps
+
+
+# ---------------------------------------------------------------------------
+# Quota circuit breaker
+# ---------------------------------------------------------------------------
+# Once Google returns OVER_QUERY_LIMIT, the daily quota is gone — every further
+# call this day fails the same way. Without a breaker, each driver dashboard
+# poll re-geocodes the same un-cached/failed addresses across all workers,
+# re-hitting Google thousands of times after the cap. We trip a process-wide
+# breaker on the first OVER_QUERY_LIMIT and short-circuit all geocode calls for
+# a cooldown window so we stop hammering a quota we know is exhausted.
+_QUOTA_COOLDOWN_SECONDS = int(os.getenv("GEOCODE_QUOTA_COOLDOWN_SECONDS", "1800"))
+_quota_blocked_until: float = 0.0
+_quota_lock = threading.Lock()
+
+
+class GeocodeQuotaExhausted(RuntimeError):
+    """Raised when the quota breaker is open — caller should skip geocoding."""
+
+
+def _quota_is_blocked() -> bool:
+    with _quota_lock:
+        return time.monotonic() < _quota_blocked_until
+
+
+def _trip_quota_breaker() -> None:
+    global _quota_blocked_until
+    with _quota_lock:
+        _quota_blocked_until = time.monotonic() + _QUOTA_COOLDOWN_SECONDS
+    logger.warning(
+        "Geocode quota exhausted (OVER_QUERY_LIMIT) — pausing all geocode "
+        "calls for %ds", _QUOTA_COOLDOWN_SECONDS,
+    )
 
 
 def _extract_component(components: list[dict], type_name: str) -> str | None:
@@ -237,16 +283,22 @@ def _reverse_geocode_cached(
     # grid behavior while preserving the precise lat/lng on the returned
     # Location (parse_geocode_result fills coords from the API response).
     _ = (lat_key, lng_key)  # only present to participate in the cache key
+    if _quota_is_blocked():
+        raise GeocodeQuotaExhausted("reverse_geocode skipped — quota breaker open")
     client = cast(Any, _get_client())
-    # First try: specific types for detailed address
-    results = client.reverse_geocode(
-        (lat, lng),
-        language="mn",
-        result_type=["street_address", "premise", "sublocality", "neighborhood"],
-    )
-    if not results:
-        # Fallback: all types
-        results = client.reverse_geocode((lat, lng), language="mn")
+    try:
+        # First try: specific types for detailed address
+        results = client.reverse_geocode(
+            (lat, lng),
+            language="mn",
+            result_type=["street_address", "premise", "sublocality", "neighborhood"],
+        )
+        if not results:
+            # Fallback: all types
+            results = client.reverse_geocode((lat, lng), language="mn")
+    except googlemaps.exceptions._OverQueryLimit:
+        _trip_quota_breaker()
+        raise
 
     if not results:
         return Location(
@@ -396,6 +448,8 @@ def geocode_address(address: str) -> Location:
 def _geocode_address_impl(address: str, places: bool = False) -> Location:
     if address in _GEOCODE_FAIL_CACHE:
         raise ValueError(f"Geocoding previously failed for address: {address}")
+    if _quota_is_blocked():
+        raise GeocodeQuotaExhausted("geocode skipped — quota breaker open")
     client = _get_client()
     api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
     lower = address.lower()
@@ -437,17 +491,29 @@ def _geocode_address_impl(address: str, places: bool = False) -> Location:
         extra.append("Монгол")
     targeted_query = f"{address}, {', '.join(extra)}" if extra else base_query
     # --- Geocoding API fallback ---
-    results = client.geocode(  # type: ignore
-        targeted_query,
-        region="mn",
-        language="mn",
-        bounds=_MN_BOUNDS,
-    )
-    mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
+    try:
+        results = client.geocode(  # type: ignore
+            targeted_query,
+            region="mn",
+            language="mn",
+            bounds=_MN_BOUNDS,
+        )
+        mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
+
+        if not mn_results:
+            results = client.geocode(address, region="mn", language="mn", bounds=_MN_BOUNDS)  # type: ignore
+            mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
+    except googlemaps.exceptions._OverQueryLimit:
+        _trip_quota_breaker()
+        raise
 
     if not mn_results:
-        results = client.geocode(address, region="mn", language="mn", bounds=_MN_BOUNDS)  # type: ignore
-        mn_results = [r for r in (results or []) if _is_in_mongolia(r)]
+        # Genuine no-match (not a quota issue): remember it so the same dead
+        # address string doesn't re-hit Google on every driver poll. Raise
+        # instead of returning a bogus 0,0 Location that would get cached as
+        # a "success" and render as a pin in the Gulf of Guinea.
+        _mark_geocode_failed(address)
+        raise ValueError(f"No geocode result for address: {address}")
 
     return parse_geocode_result(_best_result(mn_results))
 

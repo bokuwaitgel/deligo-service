@@ -724,7 +724,7 @@ async def track_delivery_order(
 @router.get("/driver/{driver_id}", response_model=list[DeliveryOrderResponse])
 async def get_driver_deliveries(
     driver_id: str,
-    limit: int = Query(50, description="Maximum number of deliveries to return"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of deliveries to return (1-200)"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """List driver orders and auto-sync missing local delivery rows from Deligo payload."""
