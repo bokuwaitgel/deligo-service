@@ -35,6 +35,11 @@ class Location(BaseModel):
     # (e.g. "2-р орцны ард, хүрэн хаалга"). Stored in the customer_location JSON
     # blob and shown back on the driver's order card.
     driver_note: Optional[str] = None
+    # Rural ("орон нутаг") address: the whole address sits in street_address with
+    # no district/khoroo/building breakdown. Persisted in the customer_location
+    # blob so the edit form re-opens in rural mode. (Deligo's own is_country flag
+    # is upstream and read-only here — this is the locally-edited intent.)
+    is_countryside: Optional[bool] = None
 
 
 class DriverLocation(BaseModel):
