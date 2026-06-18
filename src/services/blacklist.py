@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-_DEFAULT_DRIVER_BLACKLIST: set[str] = {"1704422069423385"}
+_DEFAULT_DRIVER_BLACKLIST: set[str] = set()
 
 
 def _load_blacklist() -> set[str]:
