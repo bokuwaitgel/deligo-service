@@ -315,7 +315,7 @@ def _upsert_local_delivery_from_detail(
 # Map status is determined by the delivery workflow stage.
 
 @router.post("/", response_model=DeliveryOrderResponse, status_code=201)
-async def create_delivery_order(
+def create_delivery_order(
     order: DeliveryOrderCreate,
     repo: DeliveryRepository = Depends(get_delivery_repository),
     api_key: str = Depends(require_api_key),
@@ -330,7 +330,7 @@ async def create_delivery_order(
 
 
 @router.get("/active-drivers", dependencies=[Depends(require_api_key)])
-async def get_active_drivers(
+def get_active_drivers(
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Return drivers that currently have active deliveries, joined with their last known location.
@@ -370,7 +370,7 @@ async def get_active_drivers(
 
 
 @router.get("/today", dependencies=[Depends(require_api_key)])
-async def get_today_deliveries():
+def get_today_deliveries():
     """All of today's delivery orders across every driver (admin overview feed).
 
     A single Deligo /api/sales/integration call (no driver filter). The payload is
@@ -388,7 +388,7 @@ async def get_today_deliveries():
 
 
 @router.get("/{sales_number}", response_model=DeliveryOrderResponse)
-async def get_delivery_order(
+def get_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
     api_key: str = Depends(require_api_key),
@@ -412,7 +412,7 @@ async def get_delivery_order(
 
 
 @router.get("/sales-id/{sales_id}", response_model=DeliveryOrderResponse)
-async def get_delivery_order_by_sales_id(
+def get_delivery_order_by_sales_id(
     sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
     api_key: str = Depends(require_api_key),
@@ -434,7 +434,7 @@ async def get_delivery_order_by_sales_id(
         raise HTTPException(status_code=500, detail="Failed to fetch delivery order")
     
 @router.post("/location", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
-async def update_delivery_location(
+def update_delivery_location(
     body: LocationUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
     x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
@@ -482,7 +482,7 @@ async def update_delivery_location(
         raise HTTPException(status_code=500, detail="Failed to update delivery location")
 
 @router.post("/address", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
-async def update_delivery_address(
+def update_delivery_address(
     address_update: AddressUpdateRequest,
     is_countryside: bool = Query(False, description="Skip Mongolia/UB suffix in geocoding"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
@@ -523,7 +523,7 @@ class _GeocodeCacheRequest(BaseModel):
 
 
 @router.post("/location/cache", dependencies=[Depends(require_api_key)])
-async def cache_geocoded_location(
+def cache_geocoded_location(
     body: _GeocodeCacheRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -553,7 +553,7 @@ async def cache_geocoded_location(
 
 
 @router.post("/{sales_number}/start", dependencies=[Depends(require_api_key)])
-async def start_delivery_order(
+def start_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
     x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
@@ -580,7 +580,7 @@ async def start_delivery_order(
 
 
 @router.post("/{sales_number}/map_edit", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
-async def complete_delivery_order(
+def complete_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -598,7 +598,7 @@ async def complete_delivery_order(
 
 
 @router.post("/map_status", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
-async def set_delivery_map_status(
+def set_delivery_map_status(
     payload: MapStatusUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -619,7 +619,7 @@ async def set_delivery_map_status(
 
 
 @router.post("/eta", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
-async def update_delivery_eta(
+def update_delivery_eta(
     payload: EtaUpdateRequest,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -643,7 +643,7 @@ class _DeleteDeliveryRequest(BaseModel):
 
 
 @router.post("/delete/{sales_id}", dependencies=[Depends(require_api_key)])
-async def delete_delivery_order(
+def delete_delivery_order(
     sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -664,7 +664,7 @@ async def delete_delivery_order(
 
 """Public endpoint for customers to track their delivery order by sales number."""
 @router.get("/tracking/{sales_number}", response_model=DeliveryOrderResponse)
-async def track_delivery_order(
+def track_delivery_order(
     sales_number: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -744,7 +744,7 @@ async def track_delivery_order(
         have query params for query, limit etc to support pagination and filtering in the future.
 """
 @router.get("/driver/{driver_id}", response_model=list[DeliveryOrderResponse])
-async def get_driver_deliveries(
+def get_driver_deliveries(
     driver_id: str,
     limit: int = Query(50, ge=1, le=200, description="Maximum number of deliveries to return (1-200)"),
     repo: DeliveryRepository = Depends(get_delivery_repository),
@@ -902,7 +902,7 @@ async def get_driver_deliveries(
 """
 
 @router.get("/shop/{store_id}/summary")
-async def get_shop_summary(
+def get_shop_summary(
     store_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
@@ -952,7 +952,7 @@ async def get_shop_summary(
 
 
 @router.get("/shop/{store_id}", response_model=list[DeliveryOrderResponse])
-async def get_shop_deliveries(
+def get_shop_deliveries(
     store_id: str,
     query: Optional[str] = Query(None, description="Search query for filtering deliveries"),
     limit: int = Query(10, description="Maximum number of deliveries to return"),

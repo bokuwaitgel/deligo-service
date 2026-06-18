@@ -22,14 +22,27 @@ def _get_engine() -> Engine:
         conn_str = os.getenv("DATABASE_URL", "")
         if not conn_str:
             raise RuntimeError("DATABASE_URL environment variable is not set")
+        # Total connections to Postgres = API_REPLICAS * WORKERS * (pool_size + max_overflow).
+        # Keep that product under the server's max_connections (default 100).
+        # Defaults below: 4 replicas * 2 workers * (5 + 5) = 80, leaving headroom
+        # for seed jobs / admin sessions. Tune via env without a code change.
+        pool_size = int(os.getenv("DB_POOL_SIZE", "5"))
+        max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+        pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
         _ENGINE = create_engine(
             conn_str,
             pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
             pool_recycle=300,
         )
-        logger.info("SQLAlchemy engine created: %s", conn_str.split("@")[-1] if "@" in conn_str else conn_str[:40])
+        logger.info(
+            "SQLAlchemy engine created: %s (pool_size=%d max_overflow=%d)",
+            conn_str.split("@")[-1] if "@" in conn_str else conn_str[:40],
+            pool_size,
+            max_overflow,
+        )
     return _ENGINE
 
 
