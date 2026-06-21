@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -169,10 +170,18 @@ def _upsert_local_delivery_from_detail(
         "country", "postal_code", "building",
     )
     _existing_for_enrich = repo.get_by_sales_number(sales_number)
+    # "Already enriched" = the saved row carries a usable address OR a prior
+    # reverse-geocode attempt was already stamped (_enriched_at). The stamp is
+    # what stops a coords-only order whose reverse-geocode returns nothing
+    # usable from re-billing Google on EVERY driver load.
     _already_enriched = (
         _existing_for_enrich is not None
         and isinstance(_existing_for_enrich.customer_location, dict)
-        and any(_existing_for_enrich.customer_location.get(k) for k in _structured_address_keys)
+        and (
+            any(_existing_for_enrich.customer_location.get(k) for k in _structured_address_keys)
+            or bool(_existing_for_enrich.customer_location.get("formatted_address"))
+            or bool(_existing_for_enrich.customer_location.get("_enriched_at"))
+        )
     )
     if isinstance(customer_location, dict) and not _already_enriched:
         has_coords = customer_location.get("latitude") is not None and customer_location.get("longitude") is not None
@@ -190,11 +199,20 @@ def _upsert_local_delivery_from_detail(
                 fallback_address=customer_location.get("formatted_address") or customer_address,
             )
             if isinstance(enriched, dict):
-                # Keep the original coordinates / formatted_address; only fold in
-                # the structured fields we were missing.
+                # Keep the original coordinates; fold in the structured fields we
+                # were missing AND the formatted_address. Persisting
+                # formatted_address is what closes the geocode gate next load —
+                # UB coords often return empty structured fields but a usable
+                # formatted_address, so without saving it the order re-geocoded
+                # on every driver load.
                 for key in _structured_address_keys:
                     if customer_location.get(key) in (None, "") and enriched.get(key) not in (None, ""):
                         customer_location[key] = enriched[key]
+                if not customer_location.get("formatted_address") and enriched.get("formatted_address"):
+                    customer_location["formatted_address"] = enriched["formatted_address"]
+            # Stamp the attempt regardless of result. A coord that reverse-geocodes
+            # to nothing usable must not be retried (and re-billed) on every load.
+            customer_location["_enriched_at"] = datetime.now(timezone.utc).isoformat()
 
     logger.info(
         "_upsert %s — extracted customer_location keys=%s "
@@ -295,6 +313,13 @@ def _upsert_local_delivery_from_detail(
         changed = False
         for key in structured_keys:
             if merged.get(key) in (None, "") and customer_location.get(key) not in (None, ""):
+                merged[key] = customer_location[key]
+                changed = True
+        # Persist the formatted_address + enrich stamp produced by the
+        # reverse-geocode above so the next driver load doesn't re-bill Google
+        # for this same coord.
+        for key in ("formatted_address", "_enriched_at"):
+            if not merged.get(key) and customer_location.get(key):
                 merged[key] = customer_location[key]
                 changed = True
         if changed:
