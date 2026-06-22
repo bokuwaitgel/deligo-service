@@ -317,7 +317,7 @@ def _enrich_with_detail_and_location(
                 sort_order=sort_order,
                 customer_address=customer_address,
                 customer_location=location_data,
-                tracking_url=_build_tracking_url(sales_number),
+                tracking_url=_build_tracking_url(sales_id),
                 map_status="pending",
             ))
             local_rows[sales_id] = created

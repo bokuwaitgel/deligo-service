@@ -267,7 +267,7 @@ def _upsert_local_delivery_from_detail(
             driver_id=resolved_driver_id,
             customer_address=customer_address,
             customer_location=customer_location,
-            tracking_url=_build_tracking_url(sales_number),
+            tracking_url=_build_tracking_url(sales_id),
             map_status="pending",
         )
         try:

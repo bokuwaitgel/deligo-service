@@ -38,8 +38,8 @@ def _is_address_editable(
     return False
 
 
-def _build_tracking_url(sales_number: str) -> Optional[str]:
-    return f"/track/{sales_number}"
+def _build_tracking_url(sales_id: str) -> Optional[str]:
+    return f"/track/{sales_id}"
 
 def _geocode(address: str, is_countryside: bool = False) -> Optional[dict]:
     try:
@@ -111,7 +111,7 @@ def create_delivery(repo: DeliveryRepository, payload: DeliveryOrderCreate) -> D
         company_id=payload.company_id,
         customer_address=payload.customer_address,
         customer_location=explicit_location or _geocode(payload.customer_address, payload.is_countryside),
-        tracking_url=_build_tracking_url(payload.sales_number),
+        tracking_url=_build_tracking_url(payload.sales_id),
         map_status=MapStatus.PENDING,
     )
 
