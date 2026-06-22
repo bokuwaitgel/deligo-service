@@ -55,8 +55,8 @@ class DriverLocationResponse(BaseModel):
 
 
 class DeliveryOrderCreate(BaseModel):
-    sales_number: str = Field(..., description="Unique sales number from the order service")
-    sales_id: Optional[str] = Field(None, description="Sales ID from the order service")
+    sales_id: str = Field(..., description="Sales ID — the order identity (primary key)")
+    sales_number: str = Field(..., description="Human-facing order code (may repeat across orders)")
     store_id: str = Field(..., description="Store/shop ID")
     company_id: Optional[str] = Field(None, description="Company ID (preferred shop scope; overrides store_id when provided)")
     customer_address: str = Field(..., description="Raw address string to geocode")
@@ -88,8 +88,8 @@ class EtaUpdateRequest(BaseModel):
 class DeliveryOrderResponse(BaseModel):
     model_config = {"from_attributes": True}
 
+    sales_id: str | int
     sales_number: str
-    sales_id: Optional[str | int] = None
     store_id: str
     company_id: Optional[str] = None
     customer_address: str

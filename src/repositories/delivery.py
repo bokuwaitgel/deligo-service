@@ -29,9 +29,18 @@ class DeliveryRepository:
         self.db_session = db_session
 
     def get_by_sales_number(self, sales_number: str) -> Optional[DeliveryOrder]:
+        """Resolve an order by its human-facing code.
+
+        sales_number is NOT an identity key — it can repeat across orders. Used
+        only by read-by-code paths (admin search, customer tracking) where the
+        caller has the printed code, not the sales_id. When a code duplicates we
+        return the MOST RECENT order so the result is at least deterministic
+        instead of an arbitrary row.
+        """
         return (
             self.db_session.query(DeliveryOrder)
             .filter(DeliveryOrder.sales_number == sales_number)
+            .order_by(DeliveryOrder.created_at.desc())
             .first()
         )
 
@@ -73,8 +82,8 @@ class DeliveryRepository:
         self.db_session.refresh(order)
         return order
 
-    def update_partial(self, sales_number: str, data: Dict[str, Any]) -> Optional[DeliveryOrder]:
-        order = self.get_by_sales_number(sales_number)
+    def update_partial(self, sales_id: str, data: Dict[str, Any]) -> Optional[DeliveryOrder]:
+        order = self.get_by_sales_id(sales_id)
         if order is None:
             return None
         for key, value in data.items():
@@ -84,19 +93,19 @@ class DeliveryRepository:
         self.db_session.refresh(order)
         return order
 
-    def delete(self, sales_number: str) -> bool:
-        order = self.get_by_sales_number(sales_number)
+    def delete(self, sales_id: str) -> bool:
+        order = self.get_by_sales_id(sales_id)
         if order is None:
             return False
         self.db_session.delete(order)
         self.db_session.commit()
         return True
 
-    def get_by_sales_numbers(self, sales_numbers: List[str], exclude_deleted: bool = False) -> List[DeliveryOrder]:
-        """Fetch full order rows for a list of sales numbers in one query."""
+    def get_by_sales_ids(self, sales_ids: List[str], exclude_deleted: bool = False) -> List[DeliveryOrder]:
+        """Fetch full order rows for a list of sales_ids in one query."""
         query = (
             self.db_session.query(DeliveryOrder)
-            .filter(DeliveryOrder.sales_number.in_(sales_numbers))
+            .filter(DeliveryOrder.sales_id.in_(sales_ids))
         )
         if exclude_deleted:
             query = query.filter(DeliveryOrder.map_status != "deleted")
@@ -111,31 +120,33 @@ class DeliveryRepository:
         )
         return [r.sales_number for r in rows]
 
-    def set_driver_sort_orders(self, driver_id: str, sales_numbers: List[str]) -> int:
+    def set_driver_sort_orders(self, driver_id: str, sales_ids: List[str]) -> int:
         """Set per-driver sort_order from a positional list.
 
         Loads ALL of the driver's rows (not just ones in the payload) so any row
-        omitted from sales_numbers has its sort_order cleared to NULL. Without
-        this clearing step, a partial reorder would leave stale indexes from a
+        omitted from sales_ids has its sort_order cleared to NULL. Without this
+        clearing step, a partial reorder would leave stale indexes from a
         previous larger ranking, creating duplicate sort_orders and gaps.
 
-        Returns the count of sales_numbers from the payload that matched a row.
+        Keyed by sales_id (the order identity) so a duplicate sales_number can't
+        rank the wrong order. Returns the count of sales_ids from the payload
+        that matched a row.
         """
         rows = (
             self.db_session.query(DeliveryOrder)
             .filter(DeliveryOrder.driver_id == driver_id)
             .all()
         )
-        desired: Dict[str, int] = {sn: idx for idx, sn in enumerate(sales_numbers)}
+        desired: Dict[str, int] = {sid: idx for idx, sid in enumerate(sales_ids)}
 
         changed = False
         matched = 0
         for row in rows:
-            new_order = desired.get(row.sales_number)
+            new_order = desired.get(row.sales_id)
             if row.sort_order != new_order:
                 row.sort_order = new_order
                 changed = True
-            if row.sales_number in desired:
+            if row.sales_id in desired:
                 matched += 1
 
         if changed:
@@ -160,20 +171,22 @@ class DeliveryRepository:
     def sync_driver_active_status(
         self,
         driver_id: str,
-        active_sales_numbers: set,
-        status_by_sn: Dict[str, Optional[str]],
+        active_sales_ids: set,
+        status_by_id: Dict[str, Optional[str]],
     ) -> None:
         """After a Deligo sync: set sync_active for each row, and persist the
         latest WFM status code returned for it.
 
-        - sync_active = True iff the row's sales_number is in active_sales_numbers
+        - sync_active = True iff the row's sales_id is in active_sales_ids
           (i.e. it's still on the driver's list in the latest Deligo response,
           regardless of WFM status). Rows in the active set are matched by
-          sales_number even when their stored driver_id is stale (reassignment,
+          sales_id even when their stored driver_id is stale (reassignment,
           or created without one) — Deligo is the source of truth for driver
           assignment, so such rows are reclaimed: driver_id is overwritten and
-          sync_active flips back to True.
-        - status = status_by_sn[sales_number] when present (the latest WFM status
+          sync_active flips back to True. Matching on sales_id (not sales_number,
+          which can repeat across drivers) avoids wrongly reclaiming another
+          driver's row that happens to share a sales_number.
+        - status = status_by_id[sales_id] when present (the latest WFM status
           code from Deligo, e.g. "salesDelivery"). Rows not in the dict keep their
           previous status (the order is no longer in the driver's sync).
         """
@@ -181,22 +194,22 @@ class DeliveryRepository:
             self.db_session.query(DeliveryOrder)
             .filter(
                 (DeliveryOrder.driver_id == driver_id)
-                | (DeliveryOrder.sales_number.in_(active_sales_numbers)),
+                | (DeliveryOrder.sales_id.in_(active_sales_ids)),
                 DeliveryOrder.map_status != 'deleted',
             )
             .all()
         )
         changed = False
         for row in rows:
-            desired_active = row.sales_number in active_sales_numbers
+            desired_active = row.sales_id in active_sales_ids
             if desired_active and row.driver_id != driver_id:
                 row.driver_id = driver_id
                 changed = True
             if row.sync_active != desired_active:
                 row.sync_active = desired_active
                 changed = True
-            if row.sales_number in status_by_sn:
-                desired_status = status_by_sn[row.sales_number]
+            if row.sales_id in status_by_id:
+                desired_status = status_by_id[row.sales_id]
                 if row.status != desired_status:
                     row.status = desired_status
                     changed = True
@@ -204,7 +217,7 @@ class DeliveryRepository:
             self.db_session.commit()
         logger.debug(
             "sync_driver_active_status: driver=%s active=%d total_rows=%d",
-            driver_id, len(active_sales_numbers), len(rows),
+            driver_id, len(active_sales_ids), len(rows),
         )
 
     def get_by_shop_id_paginated(
@@ -216,16 +229,16 @@ class DeliveryRepository:
                 DeliveryOrder.company_id == store_id,
                 DeliveryOrder.map_status != "deleted",
             )
-            .order_by(DeliveryOrder.created_at.desc(), DeliveryOrder.sales_number.desc())
+            .order_by(DeliveryOrder.created_at.desc(), DeliveryOrder.sales_id.desc())
         )
         if cursor:
-            anchor = self.get_by_sales_number(cursor)
+            anchor = self.get_by_sales_id(cursor)
             if anchor is not None and anchor.created_at is not None:
                 query = query.filter(
                     (DeliveryOrder.created_at < anchor.created_at)
                     | (
                         (DeliveryOrder.created_at == anchor.created_at)
-                        & (DeliveryOrder.sales_number < cursor)
+                        & (DeliveryOrder.sales_id < cursor)
                     )
                 )
         return query.limit(limit + 1).all()
@@ -238,7 +251,7 @@ class DeliveryRepository:
         rows = (
             self.db_session.query(
                 DeliveryOrder.driver_id,
-                func.count(DeliveryOrder.sales_number).label("active_count"),
+                func.count(DeliveryOrder.sales_id).label("active_count"),
             )
             .filter(
                 DeliveryOrder.driver_id.isnot(None),

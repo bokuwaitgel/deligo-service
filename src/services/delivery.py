@@ -115,18 +115,23 @@ def create_delivery(repo: DeliveryRepository, payload: DeliveryOrderCreate) -> D
         map_status=MapStatus.PENDING,
     )
 
-    #before creating, check if sales_number already exists to avoid duplicates
-    existing = repo.get_by_sales_number(payload.sales_number)
+    #before creating, check if sales_id already exists to avoid duplicates
+    existing = repo.get_by_sales_id(payload.sales_id)
     if existing:
         # return existing order if already exists
-        order = repo.get_by_sales_number(payload.sales_number)
-        return DeliveryOrderResponse.model_validate(order)
+        return DeliveryOrderResponse.model_validate(existing)
 
     return DeliveryOrderResponse.model_validate(repo.create(order))
 
 
-def get_delivery(repo: DeliveryRepository, sales_number: str) -> Optional[DeliveryOrderResponse]:
-    order = repo.get_by_sales_number(sales_number)
+def get_delivery(repo: DeliveryRepository, identifier: str) -> Optional[DeliveryOrderResponse]:
+    """Resolve an order for the read-by-code routes (admin search / customer
+    tracking). Prefer sales_id (the identity key) for an exact match, and fall
+    back to the human-facing sales_number so distributed /track/{sales_number}
+    links and admin code search keep working. A numeric sales_id can't collide
+    with an alphanumeric sales_number, so trying sales_id first is safe.
+    """
+    order = repo.get_by_sales_id(identifier) or repo.get_by_sales_number(identifier)
     return DeliveryOrderResponse.model_validate(order) if order else None
 
 
@@ -166,7 +171,7 @@ def _compose_customer_address(location: Location, fallback: str = "") -> str:
 
 def update_location(
     repo: DeliveryRepository,
-    sales_number: str | int,
+    sales_id: str | int,
     location: Location,
     *,
     is_driver: bool = False,
@@ -178,9 +183,9 @@ def update_location(
     of an order already assigned to them, whereas customers/shops may only edit
     while it is still "Шинэ" and unassigned.
     """
-    sales_number = str(sales_number)
+    sales_id = str(sales_id)
 
-    order = repo.get_by_sales_number(sales_number)
+    order = repo.get_by_sales_id(sales_id)
     if order is None:
         return None
     if order.map_status == MapStatus.COMPLETED:
@@ -233,7 +238,7 @@ def update_location(
                 "Захиалга хуваарилагдсан тул хаягийг өөрчлөх боломжгүй."
             )
 
-    updated = repo.update_partial(sales_number, {"customer_location": location.model_dump(mode="json")})
+    updated = repo.update_partial(sales_id, {"customer_location": location.model_dump(mode="json")})
     if updated and order.sales_id:
         address = _compose_customer_address(location, fallback=order.customer_address or "")
         extra_notes = location.building.extra_notes if location.building else None
@@ -249,10 +254,10 @@ def update_location(
 
 
 def update_location_by_address(
-    repo: DeliveryRepository, sales_number: str, address: str, is_countryside: bool = False
+    repo: DeliveryRepository, sales_id: str, address: str, is_countryside: bool = False
 ) -> Optional[DeliveryOrderResponse]:
     """Re-geocode a new address string and update. Returns None if not found, completed, or geocoding fails."""
-    order = repo.get_by_sales_number(sales_number)
+    order = repo.get_by_sales_id(sales_id)
     if order is None:
         return None
     if order.map_status == MapStatus.COMPLETED:
@@ -261,8 +266,8 @@ def update_location_by_address(
     location_data = repo.find_location_by_address(address)
     if location_data is None:
         # Жолооч / захиалгад тус бүрд өдрийн квот хэтрээгүй эсэхийг шалгана.
-        # Driver_id байхгүй (захиалга шинэ) үед sales_number-аар лимит барина.
-        quota_key = order.driver_id or order.sales_number
+        # Driver_id байхгүй (захиалга шинэ) үед sales_id-аар лимит барина.
+        quota_key = order.driver_id or order.sales_id
         if not consume_geocode_quota(quota_key):
             raise ValueError(
                 f"Geocode quota exhausted for {quota_key}; try again later"
@@ -270,7 +275,7 @@ def update_location_by_address(
         location_data = _geocode(address, is_countryside)
     if location_data is None:
         raise ValueError(f"Geocoding failed for address: {address}")
-    updated = repo.update_partial(sales_number, {
+    updated = repo.update_partial(sales_id, {
         "customer_address": address,
         "customer_location": location_data,
     })
@@ -282,10 +287,10 @@ def update_location_by_address(
     return DeliveryOrderResponse.model_validate(updated)
 
 
-def complete_delivery(repo: DeliveryRepository, sales_number: str) -> Optional[DeliveryOrderResponse]:
+def complete_delivery(repo: DeliveryRepository, sales_id: str) -> Optional[DeliveryOrderResponse]:
     """Lock the delivery location — no further edits allowed after this."""
-    order = repo.get_by_sales_number(sales_number)
+    order = repo.get_by_sales_id(sales_id)
     if order is None:
         return None
-    updated = repo.update_partial(sales_number, {"map_status": MapStatus.COMPLETED})
+    updated = repo.update_partial(sales_id, {"map_status": MapStatus.COMPLETED})
     return DeliveryOrderResponse.model_validate(updated)

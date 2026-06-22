@@ -117,7 +117,7 @@ class OrderListRequest(BaseModel):
 
 
 class DriverOrderSortRequest(BaseModel):
-    sales_numbers: List[str] = Field(min_length=1)
+    sales_ids: List[str] = Field(min_length=1)
     scope_id: str | None = None
 
 
@@ -136,8 +136,8 @@ def _sort_driver_items(
 ) -> List[Dict[str, Any]]:
     indexed_items: List[tuple[bool, int, int, Dict[str, Any]]] = []
     for original_index, item in enumerate(items):
-        sales_number = _as_str(item.get("sales_number"))
-        local = local_rows.get(sales_number) if sales_number else None
+        sales_id = _as_str(item.get("sales_id"))
+        local = local_rows.get(sales_id) if sales_id else None
         sort_order = local.sort_order if local and local.sort_order is not None else None
         indexed_items.append(
             (
@@ -168,8 +168,8 @@ def _enrich_with_detail_and_location(
     3. Upsert the row if missing, and patch location if we got one from detail.
     Returns a merged list ready for the frontend.
     """
-    sales_numbers = [str(it.get("sales_number", "")) for it in items if it.get("sales_number")]
-    local_rows = {row.sales_number: row for row in repo.get_by_sales_numbers(sales_numbers)}
+    sales_ids = [str(it.get("sales_id", "")) for it in items if it.get("sales_id")]
+    local_rows = {row.sales_id: row for row in repo.get_by_sales_ids(sales_ids)}
 
     driver_sort_orders = [
         row.sort_order
@@ -181,12 +181,13 @@ def _enrich_with_detail_and_location(
 
     enriched: List[Dict[str, Any]] = []
     for index, item in enumerate(items):
-        sales_number = _as_str(item.get("sales_number"))
-        if not sales_number:
+        sales_id = _as_str(item.get("sales_id"))
+        if not sales_id:
+            # sales_id is the order identity — skip rows we can't key.
             continue
+        sales_number = _as_str(item.get("sales_number")) or sales_id
 
         merged = {**item}
-        sales_id = _as_str(merged.get("sales_id"))
         if include_detail and sales_id:
             detail = sales_detail(sales_id)
             if detail:
@@ -206,7 +207,7 @@ def _enrich_with_detail_and_location(
                     # Best-effort enrichment; don't fail order listing if proof fetch fails.
                     pass
 
-        local = local_rows.get(sales_number)
+        local = local_rows.get(sales_id)
 
         company_id_val = scope_company_id or _as_str(merged.get("company_id"))
         legacy_store_id = _as_str(merged.get("store_id"))
@@ -229,8 +230,8 @@ def _enrich_with_detail_and_location(
                 patch["company_id"] = scope_company_id
 
             if patch:
-                local = repo.update_partial(sales_number, patch) or local
-                local_rows[sales_number] = local
+                local = repo.update_partial(sales_id, patch) or local
+                local_rows[sales_id] = local
 
             # Combine local (authoritative coords from customer-adjusted pin)
             # with whatever Deligo returns (often the only source of structured
@@ -273,7 +274,7 @@ def _enrich_with_detail_and_location(
                     ):
                         persisted_patch["customer_location"] = combined
                     if persisted_patch:
-                        repo.update_partial(sales_number, persisted_patch)
+                        repo.update_partial(sales_id, persisted_patch)
         else:
             # No local row yet — create one so the order enters our DB and shows
             # up in shop/map lists (sync_active defaults to True). Geocoding is the
@@ -319,7 +320,7 @@ def _enrich_with_detail_and_location(
                 tracking_url=_build_tracking_url(sales_number),
                 map_status="pending",
             ))
-            local_rows[sales_number] = created
+            local_rows[sales_id] = created
 
         enriched.append(merged)
 
@@ -415,37 +416,36 @@ def driver_orders_endpoint(
         # Expose the driver's saved delivery sequence (sort_order) on each item.
         # Deligo's list payload doesn't carry it, so the client map can't show the
         # sequence number without this — pull it from the local rows.
-        sort_sales_numbers = [str(it["sales_number"]) for it in items if it.get("sales_number")]
-        sort_by_sn = {
-            row.sales_number: row.sort_order
-            for row in repo.get_by_sales_numbers(sort_sales_numbers)
+        sort_sales_ids = [str(it["sales_id"]) for it in items if it.get("sales_id")]
+        sort_by_id = {
+            row.sales_id: row.sort_order
+            for row in repo.get_by_sales_ids(sort_sales_ids)
             if row.sort_order is not None
         }
         for it in items:
-            sn = _as_str(it.get("sales_number"))
-            if sn and sn in sort_by_sn:
-                it["sort_order"] = sort_by_sn[sn]
+            sid = _as_str(it.get("sales_id"))
+            if sid and sid in sort_by_id:
+                it["sort_order"] = sort_by_id[sid]
 
         # Persist sync membership (any order in the driver's list) + latest WFM
         # status code. The "open/in-progress" filter is applied at read time
         # against the status column, not here.
-        status_by_sn: Dict[str, Optional[str]] = {}
+        status_by_id: Dict[str, Optional[str]] = {}
         for it in items:
-            sn = it.get("sales_number")
-            if not sn:
+            sid = _as_str(it.get("sales_id"))
+            if not sid:
                 continue
-            sn_str = str(sn)
             wfm_id = _as_int(it.get("wfm_status_id"))
-            status_by_sn[sn_str] = STATUS_CODE_MAP.get(wfm_id) if wfm_id is not None else None
-        active_sns: set = set(status_by_sn.keys())
-        repo.sync_driver_active_status(driver_id, active_sns, status_by_sn)
+            status_by_id[sid] = STATUS_CODE_MAP.get(wfm_id) if wfm_id is not None else None
+        active_ids: set = set(status_by_id.keys())
+        repo.sync_driver_active_status(driver_id, active_ids, status_by_id)
 
         #if customer_location is missing add location with geocoding or from detail
         for item in items:
             if not item.get("customer_location"):
-                sales_number = _as_str(item.get("sales_number"))
-                if sales_number:
-                    local = repo.get_by_sales_number(sales_number)
+                sales_id = _as_str(item.get("sales_id"))
+                if sales_id:
+                    local = repo.get_by_sales_id(sales_id)
                     if local and local.customer_location:
                         item["customer_location"] = local.customer_location
                     elif payload.include_detail:
@@ -453,20 +453,19 @@ def driver_orders_endpoint(
                         location_data = _extract_customer_location(item)
                         if location_data:
                             item["customer_location"] = location_data
-                            repo.update_partial(sales_number, {"customer_location": location_data})
+                            repo.update_partial(sales_id, {"customer_location": location_data})
                         else:
                             # As a last resort, geocode the address if quota allows.
                             customer_address = _as_str(item.get("customer_address")) or "Address not provided"
                             if customer_address and customer_address != "Address not provided":
-                                company_id_val = _as_str(item.get("company_id"))
                                 driver_id_val = driver_id
                                 is_countryside = _is_countryside_flag(item.get("is_country"))
                                 if consume_geocode_quota(driver_id_val):
-                                    print(f"[Geocode] Geocoding {sales_number}: {customer_address}")
+                                    print(f"[Geocode] Geocoding {sales_id}: {customer_address}")
                                     geocoded = _geocode(customer_address, is_countryside=is_countryside)
                                     if geocoded:
                                         item["customer_location"] = geocoded
-                                        repo.update_partial(sales_number, {"customer_location": geocoded})
+                                        repo.update_partial(sales_id, {"customer_location": geocoded})
 
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
@@ -481,11 +480,11 @@ def save_driver_order_sort_endpoint(
 ):
     _require_token(token)
 
-    cleaned_sales_numbers = [sales_number.strip() for sales_number in payload.sales_numbers if sales_number.strip()]
-    if not cleaned_sales_numbers:
-        raise HTTPException(status_code=400, detail="sales_numbers is required")
-    if len(cleaned_sales_numbers) != len(set(cleaned_sales_numbers)):
-        raise HTTPException(status_code=400, detail="sales_numbers must be unique")
+    cleaned_sales_ids = [sales_id.strip() for sales_id in payload.sales_ids if sales_id.strip()]
+    if not cleaned_sales_ids:
+        raise HTTPException(status_code=400, detail="sales_ids is required")
+    if len(cleaned_sales_ids) != len(set(cleaned_sales_ids)):
+        raise HTTPException(status_code=400, detail="sales_ids must be unique")
 
     try:
         if payload.scope_id:
@@ -497,7 +496,7 @@ def save_driver_order_sort_endpoint(
             raise HTTPException(status_code=403, detail="Жолоочийн ID олдсонгүй")
         if is_driver_blacklisted(driver_id):
             return {"status": "ok", "scope_id": driver_id, "matched_count": 0}
-        matched_count = repo.set_driver_sort_orders(driver_id, cleaned_sales_numbers)
+        matched_count = repo.set_driver_sort_orders(driver_id, cleaned_sales_ids)
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
 

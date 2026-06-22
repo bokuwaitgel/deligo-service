@@ -21,8 +21,11 @@ class DeliveryOrder(Base):
         Index("ix_delivery_active_by_driver", "driver_id", "sync_active", "status"),
     )
 
-    sales_number: Mapped[str] = mapped_column(String, primary_key=True)
-    sales_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # sales_id is the order identity / primary key. sales_number is a
+    # human-facing order code from the order service that CAN repeat across
+    # orders, so it is a plain indexed column — never an identity key.
+    sales_id: Mapped[str] = mapped_column(String, primary_key=True)
+    sales_number: Mapped[str] = mapped_column(String, nullable=False, index=True)
     store_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     company_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     driver_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)

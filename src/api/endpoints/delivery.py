@@ -144,11 +144,15 @@ def _upsert_local_delivery_from_detail(
     detail: dict,
     driver_id: Optional[str] = None,
 ) -> Optional[DeliveryOrder]:
-    sales_number = _as_str(detail.get("sales_number"))
-    if not sales_number:
+    sales_id = _as_str(detail.get("sales_id"))
+    if not sales_id:
+        # sales_id is the order identity / primary key — without it we can't
+        # safely upsert (sales_number alone can collide across orders).
         return None
 
-    sales_id = _as_str(detail.get("sales_id"))
+    # sales_number is the human-facing code; fall back to sales_id if the
+    # payload omits it so the non-null column always has a value.
+    sales_number = _as_str(detail.get("sales_number")) or sales_id
     store_id = _as_str(detail.get("store_id")) or "unknown"
     company_id = _as_str(detail.get("company_id"))
     resolved_driver_id = driver_id or _as_str(detail.get("driver_id"))
@@ -169,7 +173,7 @@ def _upsert_local_delivery_from_detail(
         "street_address", "city", "state", "district", "khoroo",
         "country", "postal_code", "building",
     )
-    _existing_for_enrich = repo.get_by_sales_number(sales_number)
+    _existing_for_enrich = repo.get_by_sales_id(sales_id)
     # "Already enriched" = the saved row carries a usable address OR a prior
     # reverse-geocode attempt was already stamped (_enriched_at). The stamp is
     # what stops a coords-only order whose reverse-geocode returns nothing
@@ -272,7 +276,7 @@ def _upsert_local_delivery_from_detail(
             # Row was inserted concurrently (or hidden from the earlier bulk fetch by
             # a stale session). Recover instead of 500-ing — re-fetch and patch below.
             repo.db_session.rollback()
-            existing = repo.get_by_sales_number(sales_number)
+            existing = repo.get_by_sales_id(sales_id)
             if existing is None:
                 raise
 
@@ -326,7 +330,7 @@ def _upsert_local_delivery_from_detail(
             patch["customer_location"] = merged
 
     if patch:
-        updated = repo.update_partial(sales_number, patch)
+        updated = repo.update_partial(sales_id, patch)
         if updated is not None:
             return updated
     return existing
@@ -484,7 +488,7 @@ def update_delivery_location(
     try:
         is_driver = bool(x_driver_token)
         updated_order = update_location(
-            repo, existing.sales_number, location,
+            repo, existing.sales_id, location,
             is_driver=is_driver,
             # Customer/shop edit → re-verify editability against the LIVE Deligo
             # status (reject an order assigned to a driver since the client last
@@ -522,7 +526,7 @@ def update_delivery_address(
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     try:
-        updated_order = update_location_by_address(repo, existing.sales_number, address_update.customer_address, is_countryside)
+        updated_order = update_location_by_address(repo, existing.sales_id, address_update.customer_address, is_countryside)
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")
         return updated_order
@@ -571,47 +575,44 @@ def cache_geocoded_location(
     loc["longitude"] = body.longitude
     if body.formatted_address and not loc.get("formatted_address"):
         loc["formatted_address"] = body.formatted_address
-    updated = repo.update_partial(existing.sales_number, {"customer_location": loc})
+    updated = repo.update_partial(existing.sales_id, {"customer_location": loc})
     if not updated:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    return {"status": "ok", "sales_number": existing.sales_number}
+    return {"status": "ok", "sales_id": existing.sales_id, "sales_number": existing.sales_number}
 
 
-@router.post("/{sales_number}/start", dependencies=[Depends(require_api_key)])
+@router.post("/{sales_id}/start", dependencies=[Depends(require_api_key)])
 def start_delivery_order(
-    sales_number: str,
+    sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
     x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
 ):
     """Driver marks the delivery as started — sets deligo wfm_status to 8 (salesDriverDone).
 
-    Looks up the local delivery row to resolve `sales_id`, then calls the deligo
-    changestatus API using the driver's own Deligo JWT when supplied via the
-    X-Driver-Token header (matching the Postman «change_status /Driver/» request),
-    otherwise calling deligo without Authorization header.
+    Keyed by sales_id (the order identity) so a duplicate sales_number can't
+    start the wrong order. Calls the deligo changestatus API using the driver's
+    own Deligo JWT when supplied via the X-Driver-Token header (matching the
+    Postman «change_status /Driver/» request), otherwise calling deligo without
+    Authorization header.
     """
-    delivery = repo.get_by_sales_number(sales_number)
+    delivery = repo.get_by_sales_id(sales_id)
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-
-    sales_id = delivery.sales_id
-    if not sales_id:
-        raise HTTPException(status_code=422, detail="sales_id not available for this delivery")
 
     ok = change_sales_status(str(sales_id), 8, driver_token=x_driver_token)
     if not ok:
         raise HTTPException(status_code=502, detail="Failed to update status in deligo")
-    return {"status": "ok", "sales_number": sales_number, "wfm_status_id": 8}
+    return {"status": "ok", "sales_id": sales_id, "sales_number": delivery.sales_number, "wfm_status_id": 8}
 
 
-@router.post("/{sales_number}/map_edit", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+@router.post("/{sales_id}/map_edit", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 def complete_delivery_order(
-    sales_number: str,
+    sales_id: str,
     repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Mark a delivery order as completed after map editing. This is a placeholder for the actual map editing workflow."""
     try:
-        completed_order = complete_delivery(repo, sales_number)
+        completed_order = complete_delivery(repo, sales_id)
         if not completed_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")
         return completed_order
@@ -632,7 +633,7 @@ def set_delivery_map_status(
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     try:
-        updated_order = repo.update_partial(existing.sales_number, {"map_status": payload.map_status.value})
+        updated_order = repo.update_partial(existing.sales_id, {"map_status": payload.map_status.value})
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
         return updated_order
@@ -657,7 +658,7 @@ def update_delivery_eta(
         existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
-    updated = repo.update_partial(existing.sales_number, {"eta_minutes": payload.eta_minutes})
+    updated = repo.update_partial(existing.sales_id, {"eta_minutes": payload.eta_minutes})
     if not updated:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     return updated
@@ -678,7 +679,7 @@ def delete_delivery_order(
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     sales_number = existing.sales_number
-    deleted = repo.delete(sales_number)
+    deleted = repo.delete(existing.sales_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     return {"status": "deleted", "sales_number": sales_number, "sales_id": sales_id}
@@ -716,8 +717,8 @@ def track_delivery_order(
         if delivery_order.customer_location is None and delivery_order.customer_address and delivery_order.customer_address != "Address not provided":
             is_countryside = bool((detail or {}).get("is_country") in {1, True, "1", "true"})
             geocoded = _geocode(delivery_order.customer_address, is_countryside=is_countryside)
-            if geocoded:
-                repo.update_partial(sales_number, {"customer_location": geocoded})
+            if geocoded and delivery_order.sales_id:
+                repo.update_partial(str(delivery_order.sales_id), {"customer_location": geocoded})
                 delivery_order = delivery_order.model_copy(update={"customer_location": geocoded})
 
         # For driver-only sub-statuses fetch the saved proof (text + image) so the
@@ -782,17 +783,23 @@ def get_driver_deliveries(
         if not sales:
             return []
 
-        details_by_number: dict[str, dict] = {}
+        # Key everything by sales_id — the order identity. sales_number can
+        # repeat across orders, so using it as the map/sync key would collide
+        # two different orders that happen to share a code.
+        details_by_id: dict[str, dict] = {}
         for s in sales:
-            sn = s.get("sales_number")
-            if isinstance(sn, str) and sn:
-                details_by_number[sn] = structure_sales_detail(s)
+            if not isinstance(s, dict):
+                continue
+            structured = structure_sales_detail(s)
+            sid = _as_str(structured.get("sales_id"))
+            if sid:
+                details_by_id[sid] = structured
 
-        sales_numbers = list(details_by_number.keys())
+        sales_ids = list(details_by_id.keys())
         # Build deleted set first so we don't re-surface soft-deleted orders.
-        all_local_rows = {d.sales_number: d for d in repo.get_by_sales_numbers(sales_numbers)}
-        deleted_numbers = {sn for sn, row in all_local_rows.items() if row.map_status == "deleted"}
-        local_rows = {sn: row for sn, row in all_local_rows.items() if row.map_status != "deleted"}
+        all_local_rows = {d.sales_id: d for d in repo.get_by_sales_ids(sales_ids)}
+        deleted_ids = {sid for sid, row in all_local_rows.items() if row.map_status == "deleted"}
+        local_rows = {sid: row for sid, row in all_local_rows.items() if row.map_status != "deleted"}
 
         # The Deligo /api/sales/integration LIST response only ships a thin
         # payload — the full structured customer_location (street_address,
@@ -803,8 +810,8 @@ def get_driver_deliveries(
             "country", "postal_code", "building",
         )
 
-        def _hydrate_location_from_detail(sales_number: str) -> None:
-            detail = details_by_number.get(sales_number)
+        def _hydrate_location_from_detail(sales_id: str) -> None:
+            detail = details_by_id.get(sales_id)
             if not isinstance(detail, dict):
                 return
             loc = detail.get("customer_location") if isinstance(detail.get("customer_location"), dict) else None
@@ -815,40 +822,36 @@ def get_driver_deliveries(
             # driver loses building/district/khoroo info on first insert.
             if has_coords and has_structured:
                 return
-            sales_id_val = _as_str(detail.get("sales_id"))
-            if not sales_id_val:
-                logger.info("hydrate skipped for %s — no sales_id", sales_number)
-                return
             try:
-                full = get_sales_detail(sales_id_val, use_service_auth=True)
+                full = get_sales_detail(sales_id, use_service_auth=True)
             except Exception:
-                logger.warning("get_sales_detail raised for %s", sales_number, exc_info=True)
+                logger.warning("get_sales_detail raised for %s", sales_id, exc_info=True)
                 full = None
             if not isinstance(full, dict):
-                logger.info("get_sales_detail returned no dict for %s (sales_id=%s)", sales_number, sales_id_val)
+                logger.info("get_sales_detail returned no dict for sales_id=%s", sales_id)
                 return
             # Merge full detail on top of list payload — list values are kept
             # only when the detail call doesn't override them.
-            details_by_number[sales_number] = {**detail, **full}
-            new_loc = details_by_number[sales_number].get("customer_location")
+            details_by_id[sales_id] = {**detail, **full}
+            new_loc = details_by_id[sales_id].get("customer_location")
             logger.info(
-                "hydrate %s sales_id=%s — list had coords=%s structured=%s, detail loc has keys=%s",
-                sales_number, sales_id_val, has_coords, has_structured,
+                "hydrate sales_id=%s — list had coords=%s structured=%s, detail loc has keys=%s",
+                sales_id, has_coords, has_structured,
                 list(new_loc.keys()) if isinstance(new_loc, dict) else None,
             )
 
         # Ensure every non-deleted Deligo order has a local delivery row (for map/location workflows).
-        for sales_number in sales_numbers:
-            if sales_number in deleted_numbers:
+        for sales_id in sales_ids:
+            if sales_id in deleted_ids:
                 continue
-            existing = local_rows.get(sales_number)
+            existing = local_rows.get(sales_id)
             if existing is None:
                 # New order — fetch the full detail (with structured location)
                 # so the first DB insert carries everything the driver needs.
-                _hydrate_location_from_detail(sales_number)
-                created = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
+                _hydrate_location_from_detail(sales_id)
+                created = _upsert_local_delivery_from_detail(repo, details_by_id[sales_id], driver_id=driver_id)
                 if created is not None:
-                    local_rows[sales_number] = created
+                    local_rows[sales_id] = created
             else:
                 # Existing order — patch if anything meaningful is missing OR if
                 # Deligo now exposes structured address fields the local row is
@@ -864,9 +867,9 @@ def get_driver_deliveries(
                 # When the existing row hasn't been hydrated with structured fields,
                 # fetch the detail call so we have something to merge from.
                 if existing_loc is None or not existing_has_structured:
-                    _hydrate_location_from_detail(sales_number)
+                    _hydrate_location_from_detail(sales_id)
 
-                deligo_loc = details_by_number[sales_number].get("customer_location")
+                deligo_loc = details_by_id[sales_id].get("customer_location")
                 deligo_loc = deligo_loc if isinstance(deligo_loc, dict) else None
                 has_missing_structured = bool(
                     existing_loc is not None
@@ -882,24 +885,24 @@ def get_driver_deliveries(
                     has_missing_structured
                 )
                 if needs_patch:
-                    refreshed = _upsert_local_delivery_from_detail(repo, details_by_number[sales_number], driver_id=driver_id)
+                    refreshed = _upsert_local_delivery_from_detail(repo, details_by_id[sales_id], driver_id=driver_id)
                     if refreshed is not None:
-                        local_rows[sales_number] = refreshed
+                        local_rows[sales_id] = refreshed
 
-        # Persist sync membership + latest WFM status code per sales_number.
-        status_by_sn: dict[str, Optional[str]] = {
-            sn: d.get("status_code") for sn, d in details_by_number.items()
+        # Persist sync membership + latest WFM status code per sales_id.
+        status_by_id: dict[str, Optional[str]] = {
+            sid: d.get("status_code") for sid, d in details_by_id.items()
         }
-        active_sns: set[str] = set(status_by_sn.keys())
-        repo.sync_driver_active_status(driver_id, active_sns, status_by_sn)
+        active_ids: set[str] = set(status_by_id.keys())
+        repo.sync_driver_active_status(driver_id, active_ids, status_by_id)
 
         response: list[DeliveryOrderResponse] = []
-        for sales_number in sales_numbers:
-            local = local_rows.get(sales_number)
+        for sales_id in sales_ids:
+            local = local_rows.get(sales_id)
             if local is None:
                 continue
             item = DeliveryOrderResponse.model_validate(local)
-            item = item.model_copy(update={"detail": details_by_number[sales_number]})
+            item = item.model_copy(update={"detail": details_by_id[sales_id]})
             response.append(item)
         # Open orders (wfm 5/8) come first, ranked by the driver's confirmed
         # sort_order (nulls last). Every other status (delivered, deferred, etc.)
@@ -935,6 +938,11 @@ def get_shop_summary(
     company_id = store_id
     try:
         deliveries = repo.get_by_shop_id_paginated(company_id, cursor=None, limit=10000)
+        # The external order service (ORDER_SERVICE_URL) is keyed by sales_number,
+        # not sales_id — that contract is upstream and out of our control, so this
+        # enrich stays sales_number-keyed. If a shop ever holds two orders sharing
+        # a sales_number, both resolve to the same status detail here; it's a
+        # display-count enrich only, so it degrades gracefully rather than wrongly.
         sales_numbers = [d.sales_number for d in deliveries]
         details_map: dict = {}
         if sales_numbers:
