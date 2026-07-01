@@ -599,6 +599,22 @@ def start_delivery_order(
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery order not found")
 
+    # Only an order that is currently "Хуваарилсан" (wfm 5 / salesDelivery) may be
+    # started. Fetch the live wfm from Deligo before writing so a stale driver list
+    # (Deligo's list API lags) or a next-day plan start can't stomp any other state
+    # back to wfm 8 ("Жолооч хүлээн авсан"):
+    #   - already 8 (accepted)      => no-op, return current state
+    #   - anything else (3/12/23 closed, 13-17 deferred, 1 new, ...) => refuse
+    detail = get_sales_detail(str(sales_id), use_service_auth=True)
+    current_wfm = _as_int((detail or {}).get("wfm_status_id")) if isinstance(detail, dict) else None
+    if current_wfm == 8:
+        return {"status": "ok", "sales_id": sales_id, "sales_number": delivery.sales_number, "wfm_status_id": 8}
+    if current_wfm != 5:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Order is not in 'Хуваарилсан' state (wfm={current_wfm}) — cannot start delivery",
+        )
+
     ok = change_sales_status(str(sales_id), 8, driver_token=x_driver_token)
     if not ok:
         raise HTTPException(status_code=502, detail="Failed to update status in deligo")
