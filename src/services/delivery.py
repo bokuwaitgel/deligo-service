@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
-from schemas.database.delivery_db import DeliveryOrder
+from schemas.database.delivery_db import DeliveryAddressChange, DeliveryOrder
 from schemas.delivery import DeliveryOrderCreate, DeliveryOrderResponse, Location, MapStatus
+from src.repositories.address_change import AddressChangeRepository
 from src.repositories.delivery import DeliveryRepository
 from src.services.deligo_integration import get_sales_detail, push_address_update
+from src.services.events import publish_order_event
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.location import geocode_address, reverse_geocode
 
@@ -169,19 +173,91 @@ def _compose_customer_address(location: Location, fallback: str = "") -> str:
     return ", ".join(parts)
 
 
+def _haversine_meters(
+    lat1: Optional[float], lng1: Optional[float],
+    lat2: Optional[float], lng2: Optional[float],
+) -> Optional[float]:
+    if lat1 is None or lng1 is None or lat2 is None or lng2 is None:
+        return None
+    try:
+        a_lat, a_lng = float(lat1), float(lng1)
+        b_lat, b_lng = float(lat2), float(lng2)
+    except (TypeError, ValueError):
+        return None
+    radius = 6371000.0
+    d_lat = math.radians(b_lat - a_lat)
+    d_lng = math.radians(b_lng - a_lng)
+    h = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(a_lat)) * math.cos(math.radians(b_lat)) * math.sin(d_lng / 2) ** 2
+    )
+    return round(radius * 2 * math.atan2(math.sqrt(h), math.sqrt(1 - h)), 1)
+
+
+def _record_address_change(
+    repo: DeliveryRepository,
+    order: DeliveryOrder,
+    previous_location: Optional[dict],
+    new_location: Location,
+    *,
+    changed_by_role: str,
+    changed_by_id: Optional[str],
+    changed_by_name: Optional[str],
+) -> None:
+    """Append one row to the address audit log. Never raises.
+
+    The audit log is a record OF a successful write, so a failure here must not
+    roll back or 500 an address change the customer already sees applied — it is
+    logged loudly instead.
+    """
+    try:
+        previous = previous_location if isinstance(previous_location, dict) else {}
+        prev_lat = previous.get("latitude")
+        prev_lng = previous.get("longitude")
+        entry = DeliveryAddressChange(
+            sales_id=str(order.sales_id),
+            sales_number=order.sales_number,
+            changed_by_role=changed_by_role,
+            changed_by_id=changed_by_id,
+            changed_by_name=changed_by_name,
+            previous_latitude=prev_lat,
+            previous_longitude=prev_lng,
+            previous_address=previous.get("formatted_address") or order.customer_address,
+            new_latitude=new_location.latitude,
+            new_longitude=new_location.longitude,
+            new_address=new_location.formatted_address,
+            moved_meters=_haversine_meters(
+                prev_lat, prev_lng, new_location.latitude, new_location.longitude
+            ),
+        )
+        AddressChangeRepository(repo.db_session).record(entry)
+    except Exception:
+        logger.error(
+            "Failed to write address change audit row for sales_id=%s",
+            order.sales_id, exc_info=True,
+        )
+
+
 def update_location(
     repo: DeliveryRepository,
     sales_id: str | int,
     location: Location,
     *,
     is_driver: bool = False,
-    is_customer: bool = False
+    is_customer: bool = False,
+    changed_by_id: Optional[str] = None,
+    changed_by_name: Optional[str] = None,
 ) -> Optional[DeliveryOrderResponse]:
     """Update location with pre-built coordinates. Returns None if not found or already completed.
 
     ``is_driver`` skips the "still editable" gate: a driver may correct the pin
     of an order already assigned to them, whereas customers/shops may only edit
-    while it is still "Шинэ" and unassigned.
+    while it is still "Шинэ" and unassigned. The caller must have already
+    VERIFIED the driver (see ``src.services.driver_identity``) — passing
+    ``is_driver=True`` here is a statement that authorization already happened.
+
+    ``changed_by_id`` / ``changed_by_name`` are recorded on the order and in the
+    append-only audit log so a moved pin can be traced back to who moved it.
     """
     sales_id = str(sales_id)
 
@@ -191,7 +267,7 @@ def update_location(
     if order.map_status == MapStatus.COMPLETED:
         return None
 
-    print(is_driver, is_customer)
+    previous_location = order.customer_location
 
     # Re-verify editability against the LIVE Deligo status before writing. The
     # frontend gate uses the order it last fetched, which goes stale if the
@@ -238,8 +314,21 @@ def update_location(
                 "Захиалга хуваарилагдсан тул хаягийг өөрчлөх боломжгүй."
             )
 
-    updated = repo.update_partial(sales_id, {"customer_location": location.model_dump(mode="json")})
+    changed_by_role = "driver" if is_driver else ("customer" if is_customer else "shop")
+    changed_at = datetime.now(timezone.utc)
+    updated = repo.update_partial(sales_id, {
+        "customer_location": location.model_dump(mode="json"),
+        "location_updated_at": changed_at,
+        "location_updated_by": changed_by_id,
+        "location_updated_by_name": changed_by_name,
+    })
     if updated and order.sales_id:
+        _record_address_change(
+            repo, order, previous_location, location,
+            changed_by_role=changed_by_role,
+            changed_by_id=changed_by_id,
+            changed_by_name=changed_by_name,
+        )
         address = _compose_customer_address(location, fallback=order.customer_address or "")
         extra_notes = location.building.extra_notes if location.building else None
         push_address_update(
@@ -249,6 +338,18 @@ def update_location(
             location.longitude,
             extra_notes=extra_notes,
             driver_note=location.driver_note,
+        )
+        publish_order_event(
+            str(order.sales_id),
+            "address_updated",
+            {
+                "sales_number": order.sales_number,
+                "changed_by_role": changed_by_role,
+                "changed_by_name": changed_by_name,
+                "formatted_address": location.formatted_address,
+                "latitude": location.latitude,
+                "longitude": location.longitude,
+            },
         )
     return DeliveryOrderResponse.model_validate(updated)
 

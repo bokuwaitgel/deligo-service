@@ -6,9 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from schemas.delivery import DriverLocation, DriverLocationResponse
 from src.api.auth_utils import require_api_key
-from src.dependencies import get_driver_location_repository
+from src.dependencies import get_delivery_repository, get_driver_location_repository
+from src.repositories.delivery import DeliveryRepository
 from src.repositories.driver_location import DriverLocationRepository
-from src.services.driver_location import get_driver_location, upsert_driver_location
+from src.services.driver_location import (
+    announce_driver_movement,
+    get_driver_location,
+    upsert_driver_location,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +45,18 @@ def update_driver_location_endpoint(
     driver_id: str,
     location: DriverLocation,
     repo: DriverLocationRepository = Depends(get_driver_location_repository),
+    delivery_repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     """Driver reports current GPS position"""
+    # Read the previous fix BEFORE the upsert overwrites it — the nearby/far
+    # crossing test needs both points.
+    existing = get_driver_location(repo, driver_id)
+    previous = (existing.latitude, existing.longitude) if existing else None
+
     driver_loc = upsert_driver_location(repo, driver_id, location.latitude, location.longitude)
+    announce_driver_movement(
+        delivery_repo, driver_id, previous, location.latitude, location.longitude,
+    )
     return {
         "status": "ok",
         "data": {

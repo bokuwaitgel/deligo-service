@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -37,9 +37,53 @@ class DeliveryOrder(Base):
     status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     map_status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
     tracking_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Denormalized "who last moved the pin, and when". The full history lives in
+    # DeliveryAddressChange; these three columns exist so the order detail can
+    # show the attribution without a second query on every read.
+    location_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    location_updated_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    location_updated_by_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DeliveryAddressChange(Base):
+    """Append-only audit log of delivery address / pin edits.
+
+    Written on every accepted address change (driver re-pin, customer edit,
+    shop edit) so a moved pin can always be traced back to who moved it, when,
+    and from which coordinates — the delivery_orders row only keeps the current
+    value. Never updated or deleted; a correction is a new row.
+    """
+
+    __tablename__ = "delivery_address_changes"
+
+    __table_args__ = (
+        Index("ix_address_change_sales_id_created", "sales_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sales_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    sales_number: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # 'driver' | 'customer' | 'shop' | 'system'
+    changed_by_role: Mapped[str] = mapped_column(String, nullable=False, default="system")
+    changed_by_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    changed_by_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    previous_latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    previous_longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    previous_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    new_longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    new_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Distance the pin moved, in metres — lets an operator spot suspicious edits
+    # without recomputing haversine over the whole log.
+    moved_meters: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

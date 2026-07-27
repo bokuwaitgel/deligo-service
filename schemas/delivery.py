@@ -104,5 +104,31 @@ class DeliveryOrderResponse(BaseModel):
     driver_current_order_index: Optional[int] = None
     eta_minutes: Optional[int] = None
     sort_order: Optional[int] = None
+    # Who last moved the delivery pin, and when. Surfaced on the order detail so
+    # a corrected address is attributable (Package 1, requirement 1.1.5).
+    location_updated_at: Optional[datetime] = None
+    location_updated_by: Optional[str] = None
+    location_updated_by_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class AddressChangeEntry(BaseModel):
+    """One row of the delivery address audit log."""
+
+    model_config = {"from_attributes": True}
+
+    id: int
+    sales_id: str
+    sales_number: Optional[str] = None
+    changed_by_role: str
+    changed_by_id: Optional[str] = None
+    changed_by_name: Optional[str] = None
+    previous_latitude: Optional[float] = None
+    previous_longitude: Optional[float] = None
+    previous_address: Optional[str] = None
+    new_latitude: Optional[float] = None
+    new_longitude: Optional[float] = None
+    new_address: Optional[str] = None
+    moved_meters: Optional[float] = None
+    created_at: datetime

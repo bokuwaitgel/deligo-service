@@ -13,6 +13,7 @@ from src.api.endpoints.health import router as health_router
 from src.api.endpoints.location import router as location_router
 from src.api.endpoints.delivery import router as delivery_router
 from src.api.endpoints.driver import router as driver_router
+from src.api.endpoints.events import router as events_router
 
 load_dotenv()
 
@@ -24,12 +25,21 @@ async def lifespan(app: FastAPI):
     from src.dependencies import _get_engine
     from schemas.database.delivery_db import Base as DeliveryBase
     from schemas.database.driver_location_db import Base as DriverBase
+    from src.repositories.migrations import apply_schema_patches
+    from src.services.events import shutdown_event_bus, start_event_bus
 
     engine = _get_engine()
     DeliveryBase.metadata.create_all(engine)
     DriverBase.metadata.create_all(engine)
+    # create_all adds missing tables but never missing columns — patch those.
+    apply_schema_patches(engine)
     logger.info("Database tables ensured")
-    yield
+
+    await start_event_bus()
+    try:
+        yield
+    finally:
+        await shutdown_event_bus()
 
 
 app = FastAPI(
@@ -71,6 +81,7 @@ app.include_router(health_router)
 app.include_router(location_router)
 app.include_router(delivery_router)
 app.include_router(driver_router)
+app.include_router(events_router)
 
 
 @app.exception_handler(Exception)

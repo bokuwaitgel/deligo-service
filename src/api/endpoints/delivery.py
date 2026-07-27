@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from schemas.delivery import (
+    AddressChangeEntry,
     AddressUpdateRequest,
     DeliveryOrderCreate,
     DeliveryOrderResponse,
@@ -20,6 +21,7 @@ from schemas.delivery import (
 from schemas.database.delivery_db import DeliveryOrder
 from src.api.auth_utils import require_api_key
 from src.dependencies import get_delivery_repository
+from src.repositories.address_change import AddressChangeRepository
 from src.repositories.delivery import DeliveryRepository
 from src.services.delivery import (
     OrderNotEditableError,
@@ -33,6 +35,8 @@ from src.services.delivery import (
     update_location_by_address,
 )
 from src.services.blacklist import is_driver_blacklisted
+from src.services.driver_identity import DriverAuthError, authorize_driver_for_order
+from src.services.events import publish_order_event
 from src.services.deligo_integration import OPEN_STATUS_CODES, change_sales_status, get_company_sales, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.middleware_order import get_orders_by_sales_numbers
@@ -472,7 +476,9 @@ def update_delivery_location(
 
     A request carrying the driver's `X-Driver-Token` is treated as a driver edit
     and bypasses the "still editable" gate, so a driver can correct the pin of an
-    order already assigned to them.
+    order already assigned to them. The token is VERIFIED against Deligo and must
+    belong to the driver the order is assigned to — presence of the header alone
+    is not authorization (Package 1, requirement 1.2.1).
     """
     existing = repo.get_by_sales_id(str(body.sales_id))
     if not existing:
@@ -485,8 +491,24 @@ def update_delivery_location(
     if not existing:
         raise HTTPException(status_code=404, detail="Delivery order not found")
     location = Location(**body.model_dump(exclude={"sales_id", "is_customer"}))
+
+    # A driver edit must prove who is editing. An invalid token is rejected
+    # outright rather than silently downgraded to the customer path, so the
+    # driver sees "log in again" instead of a confusing 409 from the
+    # editability gate.
+    is_driver = False
+    changed_by_id: Optional[str] = None
+    changed_by_name: Optional[str] = None
+    if x_driver_token:
+        try:
+            changed_by_id, changed_by_name = authorize_driver_for_order(
+                x_driver_token, existing.driver_id,
+            )
+            is_driver = True
+        except DriverAuthError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+
     try:
-        is_driver = bool(x_driver_token)
         updated_order = update_location(
             repo, existing.sales_id, location,
             is_driver=is_driver,
@@ -496,6 +518,8 @@ def update_delivery_location(
             # for any non-driver request so a forged is_customer=false can't skip
             # the gate. Drivers carry a token and stay exempt.
             is_customer=body.is_customer or not is_driver,
+            changed_by_id=changed_by_id,
+            changed_by_name=changed_by_name,
         )
         if not updated_order:
             raise HTTPException(status_code=404, detail="Delivery order not found or already completed")
@@ -509,6 +533,21 @@ def update_delivery_location(
     except Exception as e:
         logger.error(f"Error updating delivery location: {e}")
         raise HTTPException(status_code=500, detail="Failed to update delivery location")
+
+@router.get(
+    "/location/history/{sales_id}",
+    response_model=list[AddressChangeEntry],
+    dependencies=[Depends(require_api_key)],
+)
+def get_location_history(
+    sales_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+):
+    """Audit trail of address / pin edits for one order, newest first."""
+    rows = AddressChangeRepository(repo.db_session).list_for_sales_id(str(sales_id), limit=limit)
+    return [AddressChangeEntry.model_validate(row) for row in rows]
+
 
 @router.post("/address", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
 def update_delivery_address(
@@ -618,6 +657,11 @@ def start_delivery_order(
     ok = change_sales_status(str(sales_id), 8, driver_token=x_driver_token)
     if not ok:
         raise HTTPException(status_code=502, detail="Failed to update status in deligo")
+    publish_order_event(
+        str(sales_id),
+        "delivery_started",
+        {"sales_number": delivery.sales_number, "wfm_status_id": 8, "driver_id": delivery.driver_id},
+    )
     return {"status": "ok", "sales_id": sales_id, "sales_number": delivery.sales_number, "wfm_status_id": 8}
 
 

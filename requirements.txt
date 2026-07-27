@@ -7,3 +7,6 @@ python-dotenv>=1.0.0
 psycopg2-binary>=2.9.0
 pytest>=8.0.0
 httpx>=0.27.0
+# Cross-worker fan-out for the SSE notification stream. Optional at runtime:
+# without REDIS_URL the event bus degrades to single-process delivery.
+redis>=5.0.0

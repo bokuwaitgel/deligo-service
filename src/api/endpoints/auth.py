@@ -27,7 +27,9 @@ from src.services.deligo_user_proxy import (
 )
 from src.services.blacklist import is_driver_blacklisted
 from src.services.deligo_integration import CLOSED_WFM_STATUS_IDS, STATUS_CODE_MAP, get_status_description_service
+from src.services.events import publish_order_event
 from src.services.geocode_quota import consume_geocode_quota
+from src.services.notifications import STATUS_LABEL_BY_WFM_ID, event_type_for_status
 from src.services.delivery import _geocode, _build_tracking_url
 
 logger = logging.getLogger(__name__)
@@ -232,6 +234,13 @@ def _enrich_with_detail_and_location(
             if patch:
                 local = repo.update_partial(sales_id, patch) or local
                 local_rows[sales_id] = local
+
+            # Address-edit attribution (Package 1, 1.1.5). Deligo has no such
+            # field, so it only ever comes from our local row.
+            if local.location_updated_at is not None:
+                merged["location_updated_at"] = local.location_updated_at.isoformat()
+                merged["location_updated_by"] = local.location_updated_by
+                merged["location_updated_by_name"] = local.location_updated_by_name
 
             # Combine local (authoritative coords from customer-adjusted pin)
             # with whatever Deligo returns (often the only source of structured
@@ -545,6 +554,7 @@ def shop_orders_endpoint(
 def change_status_endpoint(
     payload: ChangeStatusRequest,
     token: str = Depends(get_bearer_token),
+    repo: DeliveryRepository = Depends(get_delivery_repository),
 ):
     _require_token(token)
     try:
@@ -562,6 +572,22 @@ def change_status_endpoint(
         )
     except DeligoApiError as exc:
         raise _handle_deligo_error(exc) from exc
+
+    # Tell the customer's open tracking page what just happened. Publishing after
+    # the Deligo write means we never announce a status that failed to apply.
+    order = repo.get_by_sales_id(str(payload.sales_id))
+    publish_order_event(
+        str(payload.sales_id),
+        event_type_for_status(payload.status_id),
+        {
+            "sales_number": order.sales_number if order else str(payload.sales_id),
+            "wfm_status_id": payload.status_id,
+            "status_label": STATUS_LABEL_BY_WFM_ID.get(
+                int(payload.status_id), "Шинэчлэгдсэн"
+            ),
+            "status_description": effective_description,
+        },
+    )
 
     warning = result.get("warning") if isinstance(result, dict) else None
     response: Dict[str, Any] = {"status": "ok"}
