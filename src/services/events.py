@@ -252,6 +252,15 @@ def publish_order_event(
             "data": payload or {},
         }
         _BUS.publish(event)
+
+        # Web Push reaches the customers whose tab is closed — the ones the SSE
+        # stream above can never touch. Sent here, on the publish side only:
+        # `_deliver_local` also runs on every other worker via the Redis fan-out,
+        # so hooking it there would send one push per worker. The call queues
+        # onto a background thread and never raises.
+        from src.services.webpush import send_event as _send_push_event
+
+        _send_push_event(sid, event_type, str(event["id"]), event["data"])
     except Exception:
         logger.warning("Failed to publish order event %s", event_type, exc_info=True)
 

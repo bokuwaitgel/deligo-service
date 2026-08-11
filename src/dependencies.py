@@ -71,3 +71,13 @@ def get_driver_location_repository():
         yield DriverLocationRepository(session)
     finally:
         session.close()
+
+
+def get_push_subscription_repository():
+    from src.repositories.push_subscription import PushSubscriptionRepository
+
+    session = _get_session_factory()()
+    try:
+        yield PushSubscriptionRepository(session)
+    finally:
+        session.close()

@@ -82,6 +82,16 @@ _DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
         "icon": "info",
         "urgency": "normal",
     },
+    # Free-form message sent by an operator from the admin panel. The wording
+    # lives entirely in the payload, so this "template" is two placeholders —
+    # it exists so a manual message travels the same publish → SSE + push path
+    # as every automatic one instead of needing a second delivery mechanism.
+    "admin_message": {
+        "title": "{admin_title}",
+        "body": "{admin_body}",
+        "icon": "campaign",
+        "urgency": "high",
+    },
 }
 
 
@@ -131,6 +141,14 @@ def _format(template: str, payload: Dict[str, Any]) -> str:
         return template
 
 
+def all_templates() -> Dict[str, Dict[str, str]]:
+    """Every resolved template, for the admin panel's notification tab.
+
+    Returns a copy: the map is process-wide state that callers must not mutate.
+    """
+    return {key: dict(value) for key, value in _TEMPLATES.items()}
+
+
 def build_notification(
     event_type: str,
     sales_id: str,
@@ -153,8 +171,11 @@ def build_notification(
     return {
         "title": _format(template.get("title", ""), data),
         "body": _format(template.get("body", ""), data),
-        "icon": template.get("icon", "notifications"),
-        "urgency": template.get("urgency", "normal"),
+        # A publisher may override the glyph and priority per event — used by the
+        # admin panel's manual message, where the operator picks both. Absent
+        # from the payload (the normal case) the template's values stand.
+        "icon": data.get("notification_icon") or template.get("icon", "notifications"),
+        "urgency": data.get("notification_urgency") or template.get("urgency", "normal"),
         "url": f"{TRACKING_URL_PREFIX}{tracking_code}",
         # One notification per order per event type replaces the previous one in
         # the OS tray instead of stacking (requirement 3.2.5).
