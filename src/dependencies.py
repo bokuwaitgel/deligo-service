@@ -91,3 +91,23 @@ def get_status_catalog_override_repository():
         yield StatusCatalogOverrideRepository(session)
     finally:
         session.close()
+
+
+def get_notification_template_override_repository():
+    from src.repositories.notification_override import NotificationTemplateOverrideRepository
+
+    session = _get_session_factory()()
+    try:
+        yield NotificationTemplateOverrideRepository(session)
+    finally:
+        session.close()
+
+
+def get_notification_rule_override_repository():
+    from src.repositories.notification_override import NotificationRuleOverrideRepository
+
+    session = _get_session_factory()()
+    try:
+        yield NotificationRuleOverrideRepository(session)
+    finally:
+        session.close()

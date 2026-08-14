@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     from schemas.database.driver_location_db import Base as DriverBase
     from schemas.database.push_subscription_db import Base as PushBase
     from schemas.database.status_catalog_override_db import Base as StatusOverrideBase
+    from schemas.database.notification_override_db import Base as NotificationOverrideBase
     from src.repositories.migrations import apply_schema_patches
     from src.services.events import shutdown_event_bus, start_event_bus
 
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
     DriverBase.metadata.create_all(engine)
     PushBase.metadata.create_all(engine)
     StatusOverrideBase.metadata.create_all(engine)
+    NotificationOverrideBase.metadata.create_all(engine)
     # create_all adds missing tables but never missing columns — patch those.
     apply_schema_patches(engine)
     logger.info("Database tables ensured")

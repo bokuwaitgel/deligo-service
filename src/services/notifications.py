@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -121,9 +122,115 @@ def _load_templates() -> Dict[str, Dict[str, str]]:
     return templates
 
 
-# Resolved once per process. Changing wording is a config change plus a restart,
-# which is the same lifecycle as every other setting in this service.
+# The env layer, resolved once per process — env genuinely cannot change under a
+# running process. Admin edits live in Postgres and are merged on top of this on
+# every read; see `_overrides()`.
 _TEMPLATES = _load_templates()
+
+
+# How long a replica may serve notification overrides it read earlier. Every
+# API worker keeps its own copy, so this is also the worst-case delay between
+# an operator saving a template and it taking effect everywhere. Short, because
+# the read is one indexed query against two tiny tables.
+_OVERRIDE_TTL = int(os.getenv("NOTIFY_OVERRIDE_TTL", "30"))
+
+# (fetched_at, templates, rules). Seeded empty so the defaults are the behaviour
+# until the first successful read.
+_override_cache: tuple[float, Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]] = (
+    0.0,
+    {},
+    {},
+)
+
+
+def _overrides() -> tuple[Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
+    """Operator edits to wording and to status→notification rules.
+
+    Reads through its own session rather than a request-scoped repository:
+    `build_notification` runs on the web push sender's background thread, which
+    has no request and therefore no dependency-injected session.
+
+    Never raises. A database that is down must not stop notifications going
+    out — callers fall back to the compiled-in defaults, which is exactly the
+    behaviour before this feature existed.
+    """
+    global _override_cache
+    fetched_at, templates, rules = _override_cache
+    now = time.time()
+    if now - fetched_at < _OVERRIDE_TTL:
+        return templates, rules
+
+    try:
+        from src.dependencies import _get_session_factory
+        from src.repositories.notification_override import (
+            NotificationRuleOverrideRepository,
+            NotificationTemplateOverrideRepository,
+        )
+
+        session = _get_session_factory()()
+        try:
+            templates = NotificationTemplateOverrideRepository(session).as_dict()
+            rules = NotificationRuleOverrideRepository(session).as_dict()
+        finally:
+            session.close()
+        _override_cache = (now, templates, rules)
+    except Exception:
+        # Keep serving the last known good copy (or the empty seed) and retry on
+        # the next call rather than hammering a database that is struggling.
+        _override_cache = (now, templates, rules)
+        logger.warning("Could not load notification overrides — using defaults", exc_info=True)
+
+    return templates, rules
+
+
+def invalidate_override_cache() -> None:
+    """Drop this worker's cached overrides so the next read hits the database.
+
+    Called by the admin endpoints after a write so the operator's own next
+    request reflects the edit immediately. Other replicas still converge on
+    their own TTL — there is no cross-process invalidation channel here, and
+    `_OVERRIDE_TTL` is the bound on that.
+    """
+    global _override_cache
+    _override_cache = (0.0, _override_cache[1], _override_cache[2])
+
+
+def resolved_templates() -> Dict[str, Dict[str, Any]]:
+    """Defaults + env + operator overrides — what will actually be sent."""
+    templates, _ = _overrides()
+    merged: Dict[str, Dict[str, Any]] = {
+        key: dict(value) for key, value in _TEMPLATES.items()
+    }
+    for event_type, fields in templates.items():
+        target = merged.setdefault(str(event_type), {})
+        for field, value in fields.items():
+            # `_updated_at` / `_updated_by` are provenance for the admin panel,
+            # not template fields — they must not leak into the rendered copy.
+            if not field.startswith("_") and value is not None:
+                target[field] = value
+    return merged
+
+
+def template_provenance() -> Dict[str, Dict[str, Any]]:
+    """Per event type: which fields an operator changed, and when.
+
+    Lets the admin panel mark a field as edited-vs-inherited without diffing
+    the rendered copy against a second request for the defaults.
+    """
+    templates, _ = _overrides()
+    result: Dict[str, Dict[str, Any]] = {}
+    for event_type, fields in templates.items():
+        result[str(event_type)] = {
+            "overridden": sorted(f for f in fields if not f.startswith("_")),
+            "updated_at": fields.get("_updated_at"),
+            "updated_by": fields.get("_updated_by"),
+        }
+    return result
+
+
+def default_templates() -> Dict[str, Dict[str, str]]:
+    """The compiled-in copy, before any operator edit — for the revert preview."""
+    return {key: dict(value) for key, value in _DEFAULT_TEMPLATES.items()}
 
 
 class _SafeDict(dict):
@@ -142,11 +249,11 @@ def _format(template: str, payload: Dict[str, Any]) -> str:
 
 
 def all_templates() -> Dict[str, Dict[str, str]]:
-    """Every resolved template, for the admin panel's notification tab.
+    """Every template that will actually be sent, for the admin panel.
 
     Returns a copy: the map is process-wide state that callers must not mutate.
     """
-    return {key: dict(value) for key, value in _TEMPLATES.items()}
+    return resolved_templates()
 
 
 def build_notification(
@@ -158,13 +265,20 @@ def build_notification(
 
     Returns None for event types that have no customer-facing message, which is
     the signal for the stream to send the event as data-only (the page still
-    refreshes, but nothing pops up).
+    refreshes, but nothing pops up). An operator muting a status in the admin
+    panel produces the same None, and therefore the same data-only behaviour.
     """
-    template = _TEMPLATES.get(event_type)
-    if not template:
+    data = dict(payload or {})
+
+    # Mute is enforced here rather than at the publish site so it covers both
+    # delivery paths at once: the SSE stream and the web push sender each call
+    # this function, and neither should announce a status the operator silenced.
+    if _is_status_muted(data.get("wfm_status_id")):
         return None
 
-    data = dict(payload or {})
+    template = resolved_templates().get(event_type)
+    if not template:
+        return None
     data.setdefault("sales_number", sales_id)
     tracking_code = str(data.get("sales_number") or sales_id)
 
@@ -217,5 +331,58 @@ WFM_STATUS_EVENT_TYPES: Dict[int, str] = {
 }
 
 
+def _is_status_muted(status_id: Any) -> bool:
+    """True when an operator turned notifications off for this wfm status."""
+    if status_id is None:
+        return False
+    try:
+        key = int(status_id)
+    except (TypeError, ValueError):
+        return False
+    _, rules = _overrides()
+    rule = rules.get(key)
+    return bool(rule and rule.get("muted"))
+
+
 def event_type_for_status(status_id: int) -> str:
-    return WFM_STATUS_EVENT_TYPES.get(int(status_id), "status_changed")
+    """Which notification a status change announces.
+
+    An operator's rule wins over ``WFM_STATUS_EVENT_TYPES``; a status nobody has
+    touched keeps the compiled-in mapping, and one that is in neither falls back
+    to the generic ``status_changed``.
+
+    A muted status still resolves to an event type — the event is published
+    either way so the tracking page refreshes; ``build_notification`` is what
+    withholds the visible message.
+    """
+    key = int(status_id)
+    _, rules = _overrides()
+    rule = rules.get(key)
+    if rule and rule.get("event_type"):
+        return str(rule["event_type"])
+    return WFM_STATUS_EVENT_TYPES.get(key, "status_changed")
+
+
+def all_rules() -> Dict[int, Dict[str, Any]]:
+    """Every status → notification mapping, defaults merged with operator edits.
+
+    Keyed by wfm status id and covering every status the notification system
+    knows a label for, so the admin table can list them all rather than only
+    the ones somebody already edited.
+    """
+    _, rules = _overrides()
+    result: Dict[int, Dict[str, Any]] = {}
+    for status_id, label in STATUS_LABEL_BY_WFM_ID.items():
+        default_event = WFM_STATUS_EVENT_TYPES.get(status_id, "status_changed")
+        rule = rules.get(status_id) or {}
+        result[status_id] = {
+            "wfm_status_id": status_id,
+            "status_label": label,
+            "default_event_type": default_event,
+            "event_type": rule.get("event_type") or default_event,
+            "muted": bool(rule.get("muted")),
+            "overridden": bool(rule.get("event_type")) or bool(rule.get("muted")),
+            "updated_at": rule.get("_updated_at"),
+            "updated_by": rule.get("_updated_by"),
+        }
+    return result

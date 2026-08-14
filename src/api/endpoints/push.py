@@ -16,13 +16,25 @@ Flow the browser follows:
 from __future__ import annotations
 
 import logging
+import re
+from string import Formatter
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.api.auth_utils import require_api_key
-from src.dependencies import get_push_subscription_repository
+from src.dependencies import (
+    get_notification_rule_override_repository,
+    get_notification_template_override_repository,
+    get_push_subscription_repository,
+)
+from src.repositories.notification_override import (
+    EDITABLE_TEMPLATE_FIELDS,
+    VALID_URGENCIES,
+    NotificationRuleOverrideRepository,
+    NotificationTemplateOverrideRepository,
+)
 from src.repositories.push_subscription import PushSubscriptionRepository
 from src.services import webpush
 from src.services.events import publish_order_event
@@ -30,8 +42,32 @@ from src.services.notifications import (
     STATUS_LABEL_BY_WFM_ID,
     TRACKING_URL_PREFIX,
     WFM_STATUS_EVENT_TYPES,
+    all_rules,
     all_templates,
+    default_templates,
+    invalidate_override_cache,
+    template_provenance,
 )
+
+# Placeholders a template may reference. Anything else renders as an empty
+# string at send time (`_SafeDict.__missing__`), so it is rejected on save
+# instead — a silently blank sentence is worse than a rejected edit.
+#
+# Kept in sync with what the publishers actually put in the payload:
+# `sales_number` is set by build_notification itself; the status fields come
+# from auth.py's status-change publish; distance from the driver_nearby check;
+# the address pair from the address-update publish; admin_* from manual sends.
+KNOWN_PLACEHOLDERS = {
+    "sales_number",
+    "status_label",
+    "status_description",
+    "wfm_status_id",
+    "distance_text",
+    "formatted_address",
+    "changed_by_name",
+    "admin_title",
+    "admin_body",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -185,15 +221,16 @@ def overview(
 
 @router.get("/templates", dependencies=[Depends(require_api_key)])
 def list_templates():
-    """The server-side copy for every event type.
+    """The copy that will actually be sent, for every event type.
 
-    Read-only on purpose. Wording is configuration (``NOTIFY_<EVENT>_TITLE`` /
-    ``NOTIFY_TEMPLATES_JSON``, resolved once per process), so an editable panel
-    here would either lie about what is live on the other API workers or need a
-    write path that survives a restart. The panel shows what will be sent and
-    names the environment variable to change it.
+    Three layers are resolved before this returns: the compiled-in defaults,
+    the ``NOTIFY_*`` environment overrides, and the operator's edits stored in
+    Postgres. ``defaults`` and ``overridden`` are carried alongside so the panel
+    can mark a field as edited and offer a revert without a second request.
     """
     templates = all_templates()
+    defaults = default_templates()
+    provenance = template_provenance()
     return {
         "status": "ok",
         "data": {
@@ -208,8 +245,13 @@ def list_templates():
                     "icon": fields.get("icon", "notifications"),
                     "urgency": fields.get("urgency", "normal"),
                     # The env var that overrides this entry, spelled out so the
-                    # operator does not have to guess the casing.
+                    # operator does not have to guess the casing. Note a saved
+                    # edit outranks it — see notifications.resolved_templates.
                     "env_prefix": f"NOTIFY_{event_type.upper()}",
+                    "default": defaults.get(event_type, {}),
+                    "overridden": provenance.get(event_type, {}).get("overridden", []),
+                    "updated_at": provenance.get(event_type, {}).get("updated_at"),
+                    "updated_by": provenance.get(event_type, {}).get("updated_by"),
                 }
                 for event_type, fields in sorted(templates.items())
                 if event_type != "admin_message"
@@ -217,6 +259,225 @@ def list_templates():
             "status_labels": STATUS_LABEL_BY_WFM_ID,
             "status_event_types": WFM_STATUS_EVENT_TYPES,
         },
+    }
+
+
+# Material Symbols names only — the frontend renders this straight into a
+# `material-symbols-outlined` span, so anything else silently draws nothing.
+_ICON_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+
+class TemplateOverrideRequest(BaseModel):
+    """A partial edit. Absent field = leave alone, null/blank = revert to default."""
+
+    title: Optional[str] = Field(default=None, max_length=200)
+    body: Optional[str] = Field(default=None, max_length=600)
+    icon: Optional[str] = Field(default=None, max_length=64)
+    urgency: Optional[str] = Field(default=None)
+    updated_by: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("icon")
+    @classmethod
+    def _check_icon(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value.strip() == "":
+            return value
+        name = value.strip()
+        if not _ICON_RE.match(name):
+            raise ValueError(
+                "icon must be a Material Symbols name — lowercase letters, digits "
+                "and underscores only (e.g. local_shipping)"
+            )
+        return name
+
+    @field_validator("urgency")
+    @classmethod
+    def _check_urgency(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or value.strip() == "":
+            return value
+        urgency = value.strip()
+        if urgency not in VALID_URGENCIES:
+            raise ValueError(f"urgency must be one of {', '.join(VALID_URGENCIES)}")
+        return urgency
+
+    @field_validator("title", "body")
+    @classmethod
+    def _check_placeholders(cls, value: Optional[str]) -> Optional[str]:
+        """Reject a template that would raise or render as literal braces.
+
+        An operator typing `{sales_number` (unclosed) or `{price}` (never in the
+        payload) would otherwise only find out when a real customer gets the
+        broken copy — `_format` swallows both at send time.
+        """
+        if value is None or value.strip() == "":
+            return value
+        text = value.strip()
+        try:
+            fields = {f for _, f, _, _ in Formatter().parse(text) if f}
+        except ValueError as exc:
+            raise ValueError(f"unbalanced {{}} in the template: {exc}") from exc
+        unknown = sorted(f for f in fields if f.split(".")[0].split("[")[0] not in KNOWN_PLACEHOLDERS)
+        if unknown:
+            raise ValueError(
+                f"unknown placeholder(s): {', '.join('{' + u + '}' for u in unknown)}. "
+                f"Available: {', '.join('{' + k + '}' for k in sorted(KNOWN_PLACEHOLDERS))}"
+            )
+        return text
+
+
+@router.put("/templates/{event_type}", dependencies=[Depends(require_api_key)])
+def upsert_template_override(
+    event_type: str,
+    payload: TemplateOverrideRequest,
+    repo: NotificationTemplateOverrideRepository = Depends(
+        get_notification_template_override_repository
+    ),
+):
+    """Rewrite one notification's copy, for every replica, without a deploy.
+
+    Rejects event types the service does not send: an override for a type that
+    will never fire is invisible dead config, and the likeliest cause is a typo.
+    """
+    known = set(default_templates())
+    if event_type not in known:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown event_type {event_type!r} (known: {', '.join(sorted(known))})",
+        )
+
+    # `exclude_unset` preserves the absent-vs-null distinction: only fields the
+    # caller actually sent are touched.
+    sent = payload.model_dump(exclude_unset=True)
+    updated_by = sent.pop("updated_by", None)
+    fields = {k: v for k, v in sent.items() if k in EDITABLE_TEMPLATE_FIELDS}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No editable fields in the request")
+
+    repo.upsert(event_type, fields, updated_by=updated_by)
+    invalidate_override_cache()
+    logger.info(
+        "Notification template override saved: event=%s fields=%s by=%s",
+        event_type, sorted(fields), updated_by or "unknown",
+    )
+    return {
+        "status": "ok",
+        "data": {
+            "event_type": event_type,
+            "template": all_templates().get(event_type, {}),
+            "overridden": template_provenance().get(event_type, {}).get("overridden", []),
+        },
+    }
+
+
+@router.delete("/templates/{event_type}", dependencies=[Depends(require_api_key)])
+def delete_template_override(
+    event_type: str,
+    repo: NotificationTemplateOverrideRepository = Depends(
+        get_notification_template_override_repository
+    ),
+):
+    """Drop every edit for one event type — back to the compiled-in copy."""
+    removed = repo.delete(event_type)
+    invalidate_override_cache()
+    return {
+        "status": "ok",
+        "data": {
+            "removed": removed,
+            "event_type": event_type,
+            "template": all_templates().get(event_type, {}),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Төлөв → мэдэгдэл: which notification a driver's status change sends.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/rules", dependencies=[Depends(require_api_key)])
+def list_rules():
+    """Every wfm status and the notification it currently fires."""
+    rules = all_rules()
+    return {
+        "status": "ok",
+        "data": {
+            "rules": [rules[key] for key in sorted(rules)],
+            # The event types an operator may choose between. `admin_message` is
+            # excluded: it renders payload placeholders a status change never
+            # carries, so picking it here would send an empty notification.
+            "event_types": sorted(k for k in default_templates() if k != "admin_message"),
+        },
+    }
+
+
+class RuleOverrideRequest(BaseModel):
+    """Absent field = leave alone. ``event_type: null`` = back to the default."""
+
+    event_type: Optional[str] = Field(default=None)
+    muted: Optional[bool] = Field(default=None)
+    updated_by: Optional[str] = Field(default=None, max_length=120)
+
+
+@router.put("/rules/{wfm_status_id}", dependencies=[Depends(require_api_key)])
+def upsert_rule_override(
+    wfm_status_id: int,
+    payload: RuleOverrideRequest,
+    repo: NotificationRuleOverrideRepository = Depends(
+        get_notification_rule_override_repository
+    ),
+):
+    """Point one status at a different notification, or silence it entirely."""
+    if wfm_status_id not in STATUS_LABEL_BY_WFM_ID:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"wfm_status_id {wfm_status_id} is not a known delivery status "
+                f"({sorted(STATUS_LABEL_BY_WFM_ID)})"
+            ),
+        )
+
+    sent = payload.model_dump(exclude_unset=True)
+    updated_by = sent.pop("updated_by", None)
+    if not sent:
+        raise HTTPException(status_code=400, detail="No editable fields in the request")
+
+    set_event_type = "event_type" in sent
+    event_type = sent.get("event_type")
+    if set_event_type and event_type:
+        choosable = {k for k in default_templates() if k != "admin_message"}
+        if event_type not in choosable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown event_type {event_type!r} (choose from {', '.join(sorted(choosable))})",
+            )
+
+    repo.upsert(
+        wfm_status_id,
+        event_type=event_type,
+        muted=sent.get("muted"),
+        updated_by=updated_by,
+        set_event_type=set_event_type,
+    )
+    invalidate_override_cache()
+    logger.info(
+        "Notification rule saved: wfm=%s event=%s muted=%s by=%s",
+        wfm_status_id, event_type, sent.get("muted"), updated_by or "unknown",
+    )
+    return {"status": "ok", "data": {"rule": all_rules().get(wfm_status_id)}}
+
+
+@router.delete("/rules/{wfm_status_id}", dependencies=[Depends(require_api_key)])
+def delete_rule_override(
+    wfm_status_id: int,
+    repo: NotificationRuleOverrideRepository = Depends(
+        get_notification_rule_override_repository
+    ),
+):
+    """Drop the rule for one status — back to WFM_STATUS_EVENT_TYPES."""
+    removed = repo.delete(wfm_status_id)
+    invalidate_override_cache()
+    return {
+        "status": "ok",
+        "data": {"removed": removed, "rule": all_rules().get(wfm_status_id)},
     }
 
 
