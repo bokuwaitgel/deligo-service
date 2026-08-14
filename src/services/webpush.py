@@ -129,6 +129,40 @@ def _send_one(subscription_info: Dict[str, Any], payload: Dict[str, Any], urgenc
     return int(getattr(response, "status_code", 0) or 0)
 
 
+def _settle_log(event_id: Optional[str], sent: int, failed: int) -> None:
+    """Close out the admin panel's history row for one event.
+
+    Until this lands the row reads "Хүлээгдэж байна..." — which is correct while
+    a send is in flight and a bug once nothing more will happen. Every path that
+    ends a send, including the ones that never start one, has to come through
+    here. Opens its own session and never raises: a reporting gap must not take
+    down the sender.
+    """
+    if not event_id:
+        return
+    try:
+        from src.dependencies import _get_session_factory
+        from src.repositories.notification_log import NotificationLogRepository
+
+        session = _get_session_factory()()
+        try:
+            NotificationLogRepository(session).mark_push_result(event_id, sent, failed)
+        finally:
+            session.close()
+    except Exception:
+        logger.warning("Could not record push result for event %s", event_id, exc_info=True)
+
+
+def settle_without_send(event_id: Optional[str]) -> None:
+    """Mark a logged notification as finished with no push attempted.
+
+    Used when push is switched off, or when the order has no registered device:
+    SSE still delivered it to an open tab, so this is a settled zero, not a
+    pending send.
+    """
+    _settle_log(event_id, 0, 0)
+
+
 def _dispatch(
     sales_id: str,
     payload: Dict[str, Any],
@@ -144,6 +178,8 @@ def _dispatch(
     from src.repositories.push_subscription import PushSubscriptionRepository
 
     session = None
+    sent = 0
+    failed = 0
     try:
         session = _get_session_factory()()
         repo = PushSubscriptionRepository(session)
@@ -153,8 +189,6 @@ def _dispatch(
 
         from pywebpush import WebPushException  # type: ignore[import-not-found]
 
-        sent = 0
-        failed = 0
         for row in subscriptions:
             info = {
                 "endpoint": row.endpoint,
@@ -188,21 +222,16 @@ def _dispatch(
 
         if sent:
             logger.info("Web push delivered to %d subscriber(s) for sales_id=%s", sent, sales_id)
-
-        # Close the loop on the admin panel's history row: until this lands it
-        # shows "хүлээгдэж байна" rather than claiming zero deliveries.
-        if event_id:
-            try:
-                from src.repositories.notification_log import NotificationLogRepository
-
-                NotificationLogRepository(session).mark_push_result(event_id, sent, failed)
-            except Exception:
-                logger.warning("Could not record push result for %s", sales_id, exc_info=True)
     except Exception:
         logger.warning("Web push dispatch failed for sales_id=%s", sales_id, exc_info=True)
     finally:
         if session is not None:
             session.close()
+        # Settled in `finally` so every exit closes the history row — no
+        # subscriptions, a mid-loop crash, or a clean run all report what
+        # actually happened instead of leaving the row pending forever. Uses its
+        # own session because this one may be in a failed transaction.
+        _settle_log(event_id, sent, failed)
 
 
 def send_to_order(
@@ -220,9 +249,11 @@ def send_to_order(
     """
     if not is_configured():
         _warn_unconfigured_once()
+        settle_without_send(event_id)
         return
     sid = str(sales_id or "").strip()
     if not sid or not notification:
+        settle_without_send(event_id)
         return
 
     payload = {
@@ -241,21 +272,30 @@ def send_to_order(
     try:
         _get_executor().submit(_dispatch, sid, payload, str(payload["urgency"]), event_id)
     except Exception:
+        # Nothing was queued, so nothing will ever settle this row.
         logger.warning("Could not queue web push for sales_id=%s", sales_id, exc_info=True)
+        settle_without_send(event_id)
 
 
 def send_event(sales_id: str, event_type: str, event_id: str, data: Dict[str, Any]) -> None:
     """Push the customer-facing message for one order event, if it has one."""
     if not is_configured():
+        # No push will ever be attempted for this event, so close its history row
+        # now. Without this the admin panel shows a permanent "Хүлээгдэж
+        # байна..." on every notification of a deployment that runs SSE-only.
+        settle_without_send(event_id)
         return
     if event_type in PUSH_SUPPRESSED_EVENT_TYPES:
+        # Not logged in the first place (see events._record_sent_notification),
+        # so there is no row to settle.
         return
 
     from src.services.notifications import build_notification
 
     notification = build_notification(event_type, str(sales_id), data or {})
     if not notification:
-        # No customer-facing copy for this event type — data-only, SSE handles it.
+        # No customer-facing copy for this event type — data-only, SSE handles
+        # it, and nothing was logged either.
         return
     send_to_order(sales_id, notification, event_id=event_id, event_type=event_type)
 

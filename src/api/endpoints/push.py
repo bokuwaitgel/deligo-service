@@ -413,6 +413,9 @@ def notification_log(
     without limit.
     """
     repo.prune(NOTIFICATION_LOG_RETENTION_DAYS)
+    # Same reasoning as the prune above: no scheduler exists, and a row left
+    # pending by a killed worker would otherwise never close.
+    repo.settle_stale()
     return {
         "status": "ok",
         "data": {

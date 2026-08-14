@@ -60,6 +60,40 @@ class NotificationLogRepository:
         self.db_session.commit()
         return True
 
+    def settle_stale(self, older_than_seconds: int = 300) -> int:
+        """Close rows whose push outcome is never going to arrive.
+
+        A send settles within seconds; the sender's ``finally`` guarantees it
+        even on a crash. Anything still pending minutes later belongs to a
+        process that was killed mid-send, or predates the fix that made every
+        exit settle — and it would otherwise read "Хүлээгдэж байна..." forever.
+
+        Counters are left as they stand rather than guessed: what this records
+        is "no result was ever reported", not "zero devices were reached".
+        Called from the read path for the same reason ``prune`` is — this
+        service has no scheduler. Never raises.
+        """
+        if older_than_seconds <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)
+        try:
+            updated = (
+                self.db_session.query(NotificationLog)
+                .filter(
+                    NotificationLog.push_settled.is_(False),
+                    NotificationLog.created_at < cutoff,
+                )
+                .update({NotificationLog.push_settled: True}, synchronize_session=False)
+            )
+            self.db_session.commit()
+            if updated:
+                logger.info("Settled %d stale notification log row(s)", updated)
+            return int(updated or 0)
+        except Exception:
+            self.db_session.rollback()
+            logger.warning("Settling stale notification rows failed", exc_info=True)
+            return 0
+
     def recent(self, limit: int = 50, sales_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Newest notifications first, optionally for one order."""
         query = self.db_session.query(NotificationLog)

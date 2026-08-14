@@ -253,6 +253,16 @@ def publish_order_event(
         }
         _BUS.publish(event)
 
+        # History for the admin panel. Recorded on the publish side for the same
+        # reason the push is: `_deliver_local` runs on every worker, so logging
+        # there would write one row per replica for a single notification.
+        #
+        # MUST come before the push is queued. The sender runs on a background
+        # thread and writes the delivery outcome back onto this row by event id;
+        # if it got there first the row would not exist yet, the outcome would be
+        # dropped, and the admin panel would show "Хүлээгдэж байна..." forever.
+        _record_sent_notification(sid, event_type, str(event["id"]), event["data"])
+
         # Web Push reaches the customers whose tab is closed — the ones the SSE
         # stream above can never touch. Sent here, on the publish side only:
         # `_deliver_local` also runs on every other worker via the Redis fan-out,
@@ -261,11 +271,6 @@ def publish_order_event(
         from src.services.webpush import send_event as _send_push_event
 
         _send_push_event(sid, event_type, str(event["id"]), event["data"])
-
-        # History for the admin panel. Recorded on the publish side for the same
-        # reason the push is: `_deliver_local` runs on every worker, so logging
-        # there would write one row per replica for a single notification.
-        _record_sent_notification(sid, event_type, str(event["id"]), event["data"])
     except Exception:
         logger.warning("Failed to publish order event %s", event_type, exc_info=True)
 
