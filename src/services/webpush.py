@@ -59,7 +59,7 @@ _MAX_SEND_WORKERS = int(os.getenv("WEB_PUSH_WORKERS", "4"))
 # Event types that are pure page-refresh signals — the tracking page redraws the
 # marker, but waking the phone for every GPS ping would be spam. They still go
 # out over SSE.
-_PUSH_SUPPRESSED_EVENT_TYPES = {"driver_location"}
+PUSH_SUPPRESSED_EVENT_TYPES = {"driver_location"}
 
 _executor: Optional[ThreadPoolExecutor] = None
 _missing_config_logged = False
@@ -129,8 +129,17 @@ def _send_one(subscription_info: Dict[str, Any], payload: Dict[str, Any], urgenc
     return int(getattr(response, "status_code", 0) or 0)
 
 
-def _dispatch(sales_id: str, payload: Dict[str, Any], urgency: str) -> None:
-    """Runs on a pool thread. Owns its own DB session."""
+def _dispatch(
+    sales_id: str,
+    payload: Dict[str, Any],
+    urgency: str,
+    event_id: Optional[str] = None,
+) -> None:
+    """Runs on a pool thread. Owns its own DB session.
+
+    ``event_id`` is only used to update the admin panel's history row with the
+    delivery outcome; a send with no id still goes out normally.
+    """
     from src.dependencies import _get_session_factory
     from src.repositories.push_subscription import PushSubscriptionRepository
 
@@ -145,6 +154,7 @@ def _dispatch(sales_id: str, payload: Dict[str, Any], urgency: str) -> None:
         from pywebpush import WebPushException  # type: ignore[import-not-found]
 
         sent = 0
+        failed = 0
         for row in subscriptions:
             info = {
                 "endpoint": row.endpoint,
@@ -155,6 +165,7 @@ def _dispatch(sales_id: str, payload: Dict[str, Any], urgency: str) -> None:
                 sent += 1
             except WebPushException as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
+                failed += 1
                 if status in (404, 410):
                     # The browser dropped this subscription (cleared site data,
                     # revoked permission, uninstalled the PWA). It will never
@@ -171,11 +182,22 @@ def _dispatch(sales_id: str, payload: Dict[str, Any], urgency: str) -> None:
                         sales_id, status, exc_info=True,
                     )
             except Exception:
+                failed += 1
                 repo.mark_failure(row.id)
                 logger.warning("Web push send raised for sales_id=%s", sales_id, exc_info=True)
 
         if sent:
             logger.info("Web push delivered to %d subscriber(s) for sales_id=%s", sent, sales_id)
+
+        # Close the loop on the admin panel's history row: until this lands it
+        # shows "хүлээгдэж байна" rather than claiming zero deliveries.
+        if event_id:
+            try:
+                from src.repositories.notification_log import NotificationLogRepository
+
+                NotificationLogRepository(session).mark_push_result(event_id, sent, failed)
+            except Exception:
+                logger.warning("Could not record push result for %s", sales_id, exc_info=True)
     except Exception:
         logger.warning("Web push dispatch failed for sales_id=%s", sales_id, exc_info=True)
     finally:
@@ -217,7 +239,7 @@ def send_to_order(
         "event_type": event_type,
     }
     try:
-        _get_executor().submit(_dispatch, sid, payload, str(payload["urgency"]))
+        _get_executor().submit(_dispatch, sid, payload, str(payload["urgency"]), event_id)
     except Exception:
         logger.warning("Could not queue web push for sales_id=%s", sales_id, exc_info=True)
 
@@ -226,7 +248,7 @@ def send_event(sales_id: str, event_type: str, event_id: str, data: Dict[str, An
     """Push the customer-facing message for one order event, if it has one."""
     if not is_configured():
         return
-    if event_type in _PUSH_SUPPRESSED_EVENT_TYPES:
+    if event_type in PUSH_SUPPRESSED_EVENT_TYPES:
         return
 
     from src.services.notifications import build_notification

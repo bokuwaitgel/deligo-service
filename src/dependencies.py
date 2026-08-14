@@ -103,6 +103,16 @@ def get_notification_template_override_repository():
         session.close()
 
 
+def get_notification_log_repository():
+    from src.repositories.notification_log import NotificationLogRepository
+
+    session = _get_session_factory()()
+    try:
+        yield NotificationLogRepository(session)
+    finally:
+        session.close()
+
+
 def get_notification_rule_override_repository():
     from src.repositories.notification_override import NotificationRuleOverrideRepository
 

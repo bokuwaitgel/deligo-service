@@ -261,8 +261,60 @@ def publish_order_event(
         from src.services.webpush import send_event as _send_push_event
 
         _send_push_event(sid, event_type, str(event["id"]), event["data"])
+
+        # History for the admin panel. Recorded on the publish side for the same
+        # reason the push is: `_deliver_local` runs on every worker, so logging
+        # there would write one row per replica for a single notification.
+        _record_sent_notification(sid, event_type, str(event["id"]), event["data"])
     except Exception:
         logger.warning("Failed to publish order event %s", event_type, exc_info=True)
+
+
+def _record_sent_notification(
+    sales_id: str,
+    event_type: str,
+    event_id: str,
+    data: Dict[str, Any],
+) -> None:
+    """Log what the customer was told, if anything.
+
+    Never raises and never blocks the publish: an unrecorded notification is a
+    reporting gap, while a failed publish is a customer who is not told their
+    driver arrived.
+    """
+    try:
+        from src.services import webpush
+        from src.services.notifications import build_notification
+
+        # Same suppression the push sender applies: driver_location fires on
+        # every GPS ping and shows nothing, so it is movement, not a message.
+        if event_type in webpush.PUSH_SUPPRESSED_EVENT_TYPES:
+            return
+
+        notification = build_notification(event_type, sales_id, data or {})
+        if not notification:
+            # No customer-facing copy, or an operator muted this status. Nothing
+            # was shown, so there is nothing to report as sent.
+            return
+
+        from src.dependencies import _get_session_factory
+        from src.repositories.notification_log import NotificationLogRepository
+        from src.repositories.push_subscription import PushSubscriptionRepository
+
+        session = _get_session_factory()()
+        try:
+            devices = PushSubscriptionRepository(session).count_for_sales_id(sales_id)
+            NotificationLogRepository(session).record(
+                event_id=event_id,
+                sales_id=sales_id,
+                event_type=event_type,
+                notification=notification,
+                push_devices=devices,
+            )
+        finally:
+            session.close()
+    except Exception:
+        logger.warning("Could not record notification history for %s", sales_id, exc_info=True)
 
 
 def subscribe_order(sales_id: str) -> "asyncio.Queue[OrderEvent]":

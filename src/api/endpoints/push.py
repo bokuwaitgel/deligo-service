@@ -16,6 +16,7 @@ Flow the browser follows:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from string import Formatter
 from typing import Optional
@@ -25,10 +26,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.api.auth_utils import require_api_key
 from src.dependencies import (
+    get_notification_log_repository,
     get_notification_rule_override_repository,
     get_notification_template_override_repository,
     get_push_subscription_repository,
 )
+from src.repositories.notification_log import NotificationLogRepository
 from src.repositories.notification_override import (
     EDITABLE_TEMPLATE_FIELDS,
     VALID_URGENCIES,
@@ -57,6 +60,11 @@ from src.services.notifications import (
 # `sales_number` is set by build_notification itself; the status fields come
 # from auth.py's status-change publish; distance from the driver_nearby check;
 # the address pair from the address-update publish; admin_* from manual sends.
+# How long sent-notification history is kept. Long enough to answer "what did
+# you tell my customer last week", short enough that the table stays small
+# without a scheduled job.
+NOTIFICATION_LOG_RETENTION_DAYS = int(os.getenv("NOTIFICATION_LOG_RETENTION_DAYS", "30"))
+
 KNOWN_PLACEHOLDERS = {
     "sales_number",
     "status_label",
@@ -384,6 +392,32 @@ def delete_template_override(
             "removed": removed,
             "event_type": event_type,
             "template": all_templates().get(event_type, {}),
+        },
+    }
+
+
+@router.get("/log", dependencies=[Depends(require_api_key)])
+def notification_log(
+    limit: int = Query(50, ge=1, le=200),
+    sales_id: Optional[str] = Query(default=None),
+    repo: NotificationLogRepository = Depends(get_notification_log_repository),
+):
+    """What the service actually told customers, newest first.
+
+    The copy is stored as sent, not re-rendered: templates are editable, so
+    recomposing an old message would show today's wording for something that
+    went out last week.
+
+    Pruning runs here rather than on a schedule — this service has no cron, an
+    operator opens this view rarely, and the alternative is a table that grows
+    without limit.
+    """
+    repo.prune(NOTIFICATION_LOG_RETENTION_DAYS)
+    return {
+        "status": "ok",
+        "data": {
+            "entries": repo.recent(limit=limit, sales_id=(sales_id or "").strip() or None),
+            "retention_days": NOTIFICATION_LOG_RETENTION_DAYS,
         },
     }
 
