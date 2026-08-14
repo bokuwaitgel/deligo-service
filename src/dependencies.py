@@ -81,3 +81,13 @@ def get_push_subscription_repository():
         yield PushSubscriptionRepository(session)
     finally:
         session.close()
+
+
+def get_status_catalog_override_repository():
+    from src.repositories.status_catalog_override import StatusCatalogOverrideRepository
+
+    session = _get_session_factory()()
+    try:
+        yield StatusCatalogOverrideRepository(session)
+    finally:
+        session.close()

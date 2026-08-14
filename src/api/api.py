@@ -15,6 +15,7 @@ from src.api.endpoints.delivery import router as delivery_router
 from src.api.endpoints.driver import router as driver_router
 from src.api.endpoints.events import router as events_router
 from src.api.endpoints.push import router as push_router
+from src.api.endpoints.status_catalog import router as status_catalog_router
 
 load_dotenv()
 
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
     from schemas.database.delivery_db import Base as DeliveryBase
     from schemas.database.driver_location_db import Base as DriverBase
     from schemas.database.push_subscription_db import Base as PushBase
+    from schemas.database.status_catalog_override_db import Base as StatusOverrideBase
     from src.repositories.migrations import apply_schema_patches
     from src.services.events import shutdown_event_bus, start_event_bus
 
@@ -34,6 +36,7 @@ async def lifespan(app: FastAPI):
     DeliveryBase.metadata.create_all(engine)
     DriverBase.metadata.create_all(engine)
     PushBase.metadata.create_all(engine)
+    StatusOverrideBase.metadata.create_all(engine)
     # create_all adds missing tables but never missing columns — patch those.
     apply_schema_patches(engine)
     logger.info("Database tables ensured")
@@ -86,6 +89,7 @@ app.include_router(delivery_router)
 app.include_router(driver_router)
 app.include_router(events_router)
 app.include_router(push_router)
+app.include_router(status_catalog_router)
 
 
 @app.exception_handler(Exception)
