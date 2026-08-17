@@ -93,11 +93,35 @@ _ADD_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("delivery_orders", "location_updated_at", "TIMESTAMPTZ"),
     ("delivery_orders", "location_updated_by", "VARCHAR"),
     ("delivery_orders", "location_updated_by_name", "VARCHAR"),
+    # Deligo sync bookkeeping. NOT NULL DEFAULT TRUE matches the model default
+    # and backfills existing rows as active in one pass — a row that predates
+    # this column was, by definition, still being synced.
+    ("delivery_orders", "sync_active", "BOOLEAN NOT NULL DEFAULT TRUE"),
+    # Upstream order status ('salesNew', 'salesDelivery', ...). Nullable: an
+    # order the sync has not classified yet has no status, and the read paths
+    # filter with IN(...) which already excludes NULL.
+    ("delivery_orders", "status", "VARCHAR"),
+    # Uploaded image shown instead of the Material Symbols glyph.
+    ("notification_template_overrides", "icon_image_id", "VARCHAR(64)"),
+)
+
+# (index, table, column list) — the Index() declarations on the models, repeated
+# here because create_all only builds indexes alongside the CREATE TABLE it
+# emits. An index added to a model whose table already exists is never created,
+# and the miss is invisible: queries stay correct and just get slower.
+_ADD_INDEXES: tuple[tuple[str, str, str], ...] = (
+    ("ix_delivery_orders_sales_number", "delivery_orders", "sales_number"),
+    ("ix_delivery_orders_customer_address", "delivery_orders", "customer_address"),
+    (
+        "ix_delivery_active_by_driver",
+        "delivery_orders",
+        "driver_id, sync_active, status",
+    ),
 )
 
 
 def apply_schema_patches(engine: Engine) -> None:
-    """Add any columns that exist on the models but not yet in the database."""
+    """Add any columns and indexes on the models but not yet in the database."""
     if engine.dialect.name != "postgresql":
         # SQLite (tests) is rebuilt from the models by create_all, so there is
         # nothing to patch — and it has no ADD COLUMN IF NOT EXISTS.
@@ -116,3 +140,15 @@ def apply_schema_patches(engine: Engine) -> None:
                 logger.warning(
                     "Schema patch failed: %s.%s (%s)", table, column, ddl_type, exc_info=True
                 )
+
+        # After the columns: a composite index can reference one that was only
+        # just added.
+        for index, table, columns in _ADD_INDEXES:
+            try:
+                conn.execute(
+                    text(f'CREATE INDEX IF NOT EXISTS {index} ON {table} ({columns})')
+                )
+            except Exception:
+                # Same reasoning as above, and one step softer: a missing index
+                # only costs speed, never correctness.
+                logger.warning("Index patch failed: %s on %s(%s)", index, table, columns, exc_info=True)

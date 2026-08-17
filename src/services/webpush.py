@@ -260,6 +260,10 @@ def send_to_order(
         "title": notification.get("title") or "Deligo",
         "body": notification.get("body") or "",
         "icon": notification.get("icon") or "notifications",
+        # Absolute URL of an uploaded image, or None to let the service worker
+        # fall back to the app logo. Must be absolute: the push service fetches
+        # it from the customer's device, not from our page.
+        "icon_url": notification.get("icon_url") or None,
         "urgency": notification.get("urgency") or "normal",
         "url": notification.get("url") or "",
         "tag": notification.get("tag") or f"deligo-{sid}",

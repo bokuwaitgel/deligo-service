@@ -18,6 +18,8 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+from src.services import notification_icon
+
 logger = logging.getLogger(__name__)
 
 # Public tracking link the notification opens when clicked. Same prefix the
@@ -183,6 +185,44 @@ def _overrides() -> tuple[Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
     return templates, rules
 
 
+# (fetched_at, {icon_id: origin}). Separate from the override cache because it
+# is read on a different trigger — only when a template actually names an image
+# — and a template edit must not force a re-read of the icon table.
+_icon_origin_cache: tuple[float, Dict[str, str]] = (0.0, {})
+
+
+def _icon_origins() -> Dict[str, str]:
+    """Upload origin per stored icon, for building absolute URLs.
+
+    Same constraints as `_overrides()`: runs on the push sender's background
+    thread with no request, and never raises — an icon whose origin cannot be
+    read falls back to PUBLIC_API_BASE_URL, and failing that to a relative path
+    that at least still renders inside an open tab.
+    """
+    global _icon_origin_cache
+    fetched_at, origins = _icon_origin_cache
+    now = time.time()
+    if now - fetched_at < _OVERRIDE_TTL:
+        return origins
+
+    try:
+        from src.dependencies import _get_session_factory
+        from src.repositories.notification_icon import NotificationIconRepository
+
+        session = _get_session_factory()()
+        try:
+            origins = {
+                row.id: (row.origin or "")
+                for row in NotificationIconRepository(session).list_all(limit=200)
+            }
+        finally:
+            session.close()
+    except Exception:
+        logger.warning("Could not load notification icon origins", exc_info=True)
+    _icon_origin_cache = (now, origins)
+    return origins
+
+
 def invalidate_override_cache() -> None:
     """Drop this worker's cached overrides so the next read hits the database.
 
@@ -191,8 +231,11 @@ def invalidate_override_cache() -> None:
     their own TTL — there is no cross-process invalidation channel here, and
     `_OVERRIDE_TTL` is the bound on that.
     """
-    global _override_cache
+    global _override_cache, _icon_origin_cache
     _override_cache = (0.0, _override_cache[1], _override_cache[2])
+    # An icon uploaded a second ago is referenced by the template saved in the
+    # same breath, so the two caches expire together.
+    _icon_origin_cache = (0.0, _icon_origin_cache[1])
 
 
 def resolved_templates() -> Dict[str, Dict[str, Any]]:
@@ -282,6 +325,16 @@ def build_notification(
     data.setdefault("sales_number", sales_id)
     tracking_code = str(data.get("sales_number") or sales_id)
 
+    # An uploaded image, if the publisher or the template names one. Resolved to
+    # an absolute URL here rather than stored as one, so the id in the database
+    # can only ever address our own icon route.
+    image_id = data.get("notification_icon_image_id") or template.get("icon_image_id")
+    image_url = (
+        notification_icon.icon_url(image_id, _icon_origins().get(str(image_id)))
+        if notification_icon.is_valid_icon_id(image_id)
+        else None
+    )
+
     return {
         "title": _format(template.get("title", ""), data),
         "body": _format(template.get("body", ""), data),
@@ -289,6 +342,10 @@ def build_notification(
         # admin panel's manual message, where the operator picks both. Absent
         # from the payload (the normal case) the template's values stand.
         "icon": data.get("notification_icon") or template.get("icon", "notifications"),
+        # Kept beside `icon`, never instead of it: the glyph is the fallback for
+        # every surface that cannot show the image (iOS, the in-app toast before
+        # the image loads, a failed fetch).
+        "icon_url": image_url,
         "urgency": data.get("notification_urgency") or template.get("urgency", "normal"),
         "url": f"{TRACKING_URL_PREFIX}{tracking_code}",
         # One notification per order per event type replaces the previous one in

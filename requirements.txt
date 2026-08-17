@@ -15,3 +15,8 @@ redis>=5.0.0
 # VAPID_PRIVATE_KEY the push service is a no-op and SSE alone is used.
 # Pulls in py-vapid and cryptography (also used by scripts/generate_vapid_keys.py).
 pywebpush>=2.0.0
+# Operator-uploaded notification icons. Pillow decodes and re-encodes every
+# upload (stripping anything that is not pixels) and python-multipart is what
+# lets FastAPI parse the file field at all.
+Pillow>=10.4.0
+python-multipart>=0.0.9

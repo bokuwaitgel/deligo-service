@@ -36,6 +36,14 @@ class NotificationTemplateOverride(Base):
     icon: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     urgency: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # An uploaded image to show instead of the Material Symbols glyph, as the
+    # notification_icons row id. Stored as an id rather than a URL so an
+    # operator can never point a customer's browser at an arbitrary host: the
+    # server derives the URL from the id it can find in its own table.
+    # `icon` stays alongside it as the fallback — iOS ignores notification
+    # images entirely, and the in-app toast still needs a glyph.
+    icon_image_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     # Free text from the admin panel; there are no user accounts on this surface.
     updated_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

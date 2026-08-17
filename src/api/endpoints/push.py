@@ -21,16 +21,19 @@ import re
 from string import Formatter
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.auth_utils import require_api_key
 from src.dependencies import (
+    get_notification_icon_repository,
     get_notification_log_repository,
     get_notification_rule_override_repository,
     get_notification_template_override_repository,
     get_push_subscription_repository,
 )
+from src.repositories.notification_icon import NotificationIconRepository
 from src.repositories.notification_log import NotificationLogRepository
 from src.repositories.notification_override import (
     EDITABLE_TEMPLATE_FIELDS,
@@ -39,7 +42,7 @@ from src.repositories.notification_override import (
     NotificationTemplateOverrideRepository,
 )
 from src.repositories.push_subscription import PushSubscriptionRepository
-from src.services import webpush
+from src.services import notification_icon, webpush
 from src.services.events import publish_order_event
 from src.services.notifications import (
     STATUS_LABEL_BY_WFM_ID,
@@ -200,6 +203,137 @@ def list_subscriptions(sales_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Uploaded notification icons
+# ---------------------------------------------------------------------------
+
+
+def _icon_row_json(row, *, url: Optional[str] = None) -> dict:
+    """Metadata for the admin picker. The image bytes are never inlined here."""
+    return {
+        "id": row.id,
+        "url": url if url is not None else notification_icon.icon_url(row.id, row.origin),
+        "label": row.label,
+        "content_type": row.content_type,
+        "size_bytes": row.size_bytes,
+        "width": row.width,
+        "height": row.height,
+        "uploaded_by": row.uploaded_by,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.post("/icons", status_code=201, dependencies=[Depends(require_api_key)])
+async def upload_icon(
+    request: Request,
+    file: UploadFile = File(..., description="PNG, JPEG or WebP image"),
+    repo: NotificationIconRepository = Depends(get_notification_icon_repository),
+):
+    """Store an image an operator picked, normalised to a 192px PNG.
+
+    The upload is decoded and re-encoded before it is stored — see
+    ``services/notification_icon.py`` for why that is a security requirement
+    and not a convenience. The returned id is the sha256 of the stored bytes,
+    so uploading the same logo twice yields the same row and the same URL.
+    """
+    raw = await file.read()
+    try:
+        icon_id, png, width, height = notification_icon.normalize_upload(
+            raw, filename=file.filename
+        )
+    except notification_icon.IconValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    row = repo.store(
+        icon_id=icon_id,
+        data=png,
+        content_type=notification_icon.STORED_CONTENT_TYPE,
+        width=width,
+        height=height,
+        label=notification_icon.safe_label(file.filename),
+        origin=str(request.base_url).rstrip("/"),
+        uploaded_by=None,
+    )
+    logger.info("Notification icon stored: id=%s %dx%d %dB", row.id, width, height, len(png))
+    return {"status": "ok", "data": _icon_row_json(row)}
+
+
+@router.get("/icons", dependencies=[Depends(require_api_key)])
+def list_icons(
+    limit: int = Query(60, ge=1, le=200),
+    repo: NotificationIconRepository = Depends(get_notification_icon_repository),
+):
+    """Everything available in the admin panel's icon picker, newest first."""
+    return {"status": "ok", "data": {"icons": [_icon_row_json(r) for r in repo.list_all(limit)]}}
+
+
+@router.get("/icons/{icon_id}")
+def get_icon(
+    icon_id: str,
+    repo: NotificationIconRepository = Depends(get_notification_icon_repository),
+):
+    """Serve one stored icon.
+
+    Public, and necessarily so: the fetcher is the customer's browser (or their
+    push service) rendering a notification, which carries no API key. The bytes
+    are the operator's own uploaded logo, and the row id has to be known to ask
+    for it.
+
+    Immutable rows mean this can be cached hard, which keeps repeat
+    notifications from re-fetching the same image. The headers are the security
+    half of the re-encoding done at upload: an exact ``Content-Type`` with
+    ``nosniff`` so nothing can be coaxed into being interpreted as a document,
+    and a CSP that neuters the response even if it somehow were.
+    """
+    if not notification_icon.is_valid_icon_id(icon_id):
+        raise HTTPException(status_code=404, detail="Icon not found")
+    row = repo.get(icon_id.strip())
+    if row is None:
+        raise HTTPException(status_code=404, detail="Icon not found")
+
+    return Response(
+        content=row.data,
+        media_type=row.content_type,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            "Content-Disposition": "inline",
+        },
+    )
+
+
+@router.delete("/icons/{icon_id}", dependencies=[Depends(require_api_key)])
+def delete_icon(
+    icon_id: str,
+    repo: NotificationIconRepository = Depends(get_notification_icon_repository),
+    template_repo: NotificationTemplateOverrideRepository = Depends(
+        get_notification_template_override_repository
+    ),
+):
+    """Delete an icon, and drop it from any template still pointing at it.
+
+    Clearing the references is the point: a template left naming a deleted icon
+    would resolve to a URL that 404s, and the customer would get a notification
+    with no image and no glyph to fall back to.
+    """
+    if not notification_icon.is_valid_icon_id(icon_id):
+        raise HTTPException(status_code=404, detail="Icon not found")
+    sid = icon_id.strip()
+
+    cleared = []
+    for row in template_repo.list_all():
+        if row.icon_image_id == sid:
+            template_repo.upsert(row.event_type, {"icon_image_id": None})
+            cleared.append(row.event_type)
+
+    removed = repo.delete(sid)
+    if cleared:
+        invalidate_override_cache()
+        logger.info("Icon %s deleted; cleared from templates %s", sid, cleared)
+    return {"status": "ok", "data": {"removed": removed, "cleared_templates": cleared}}
+
+
+# ---------------------------------------------------------------------------
 # Admin panel — notification tab
 # ---------------------------------------------------------------------------
 
@@ -228,7 +362,9 @@ def overview(
 
 
 @router.get("/templates", dependencies=[Depends(require_api_key)])
-def list_templates():
+def list_templates(
+    icon_repo: NotificationIconRepository = Depends(get_notification_icon_repository),
+):
     """The copy that will actually be sent, for every event type.
 
     Three layers are resolved before this returns: the compiled-in defaults,
@@ -239,6 +375,8 @@ def list_templates():
     templates = all_templates()
     defaults = default_templates()
     provenance = template_provenance()
+    # One read for every icon a template names, rather than one per template.
+    icon_urls = {row.id: notification_icon.icon_url(row.id, row.origin) for row in icon_repo.list_all(200)}
     return {
         "status": "ok",
         "data": {
@@ -251,6 +389,10 @@ def list_templates():
                     "title": fields.get("title", ""),
                     "body": fields.get("body", ""),
                     "icon": fields.get("icon", "notifications"),
+                    # The uploaded image, if this template names one. `icon`
+                    # above stays the fallback glyph and is never replaced.
+                    "icon_image_id": fields.get("icon_image_id"),
+                    "icon_url": icon_urls.get(fields.get("icon_image_id")),
                     "urgency": fields.get("urgency", "normal"),
                     # The env var that overrides this entry, spelled out so the
                     # operator does not have to guess the casing. Note a saved
@@ -281,6 +423,10 @@ class TemplateOverrideRequest(BaseModel):
     title: Optional[str] = Field(default=None, max_length=200)
     body: Optional[str] = Field(default=None, max_length=600)
     icon: Optional[str] = Field(default=None, max_length=64)
+    # sha256 of an uploaded icon, or blank to go back to the glyph alone. The
+    # id is checked against the icons table in the handler — a template naming
+    # an image that is not there would send a broken URL to every customer.
+    icon_image_id: Optional[str] = Field(default=None, max_length=64)
     urgency: Optional[str] = Field(default=None)
     updated_by: Optional[str] = Field(default=None, max_length=120)
 
@@ -339,6 +485,7 @@ def upsert_template_override(
     repo: NotificationTemplateOverrideRepository = Depends(
         get_notification_template_override_repository
     ),
+    icon_repo: NotificationIconRepository = Depends(get_notification_icon_repository),
 ):
     """Rewrite one notification's copy, for every replica, without a deploy.
 
@@ -359,6 +506,14 @@ def upsert_template_override(
     fields = {k: v for k, v in sent.items() if k in EDITABLE_TEMPLATE_FIELDS}
     if not fields:
         raise HTTPException(status_code=400, detail="No editable fields in the request")
+
+    # Blank means "back to the glyph"; anything else has to be an icon we hold,
+    # so a typo fails here rather than as a 404 image on a customer's phone.
+    image_id = (fields.get("icon_image_id") or "").strip() if "icon_image_id" in fields else None
+    if image_id:
+        if not notification_icon.is_valid_icon_id(image_id) or not icon_repo.exists(image_id):
+            raise HTTPException(status_code=400, detail=f"unknown icon_image_id {image_id!r}")
+        fields["icon_image_id"] = image_id
 
     repo.upsert(event_type, fields, updated_by=updated_by)
     invalidate_override_cache()
@@ -523,6 +678,9 @@ class AdminMessageRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     body: str = Field(..., min_length=1, max_length=400)
     icon: str = Field(default="campaign", max_length=64)
+    # Optional uploaded image for this one message. Same contract as the
+    # template field: an id we hold, or nothing.
+    icon_image_id: Optional[str] = Field(default=None, max_length=64)
     urgency: str = Field(default="high", pattern="^(low|normal|high)$")
 
 
@@ -530,6 +688,7 @@ class AdminMessageRequest(BaseModel):
 def send_admin_message(
     payload: AdminMessageRequest,
     repo: PushSubscriptionRepository = Depends(get_push_subscription_repository),
+    icon_repo: NotificationIconRepository = Depends(get_notification_icon_repository),
 ):
     """Send an operator-written message to one order's customer.
 
@@ -543,6 +702,12 @@ def send_admin_message(
     if not sales_id:
         raise HTTPException(status_code=400, detail="sales_id is required")
 
+    image_id = (payload.icon_image_id or "").strip()
+    if image_id and (
+        not notification_icon.is_valid_icon_id(image_id) or not icon_repo.exists(image_id)
+    ):
+        raise HTTPException(status_code=400, detail=f"unknown icon_image_id {image_id!r}")
+
     devices = repo.count_for_sales_id(sales_id)
     publish_order_event(
         sales_id,
@@ -552,6 +717,7 @@ def send_admin_message(
             "admin_title": payload.title.strip(),
             "admin_body": payload.body.strip(),
             "notification_icon": payload.icon.strip() or "campaign",
+            "notification_icon_image_id": image_id or None,
             "notification_urgency": payload.urgency,
         },
     )
