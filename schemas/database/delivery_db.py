@@ -37,6 +37,13 @@ class DeliveryOrder(Base):
     status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     map_status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
     tracking_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # When the "your order is N deliveries away" notification went out for this
+    # order. Persisted rather than kept in memory because the alert must fire
+    # exactly once and every API replica evaluates the same queue — an
+    # in-process flag would send one notification per worker.
+    queue_alert_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Denormalized "who last moved the pin, and when". The full history lives in
     # DeliveryAddressChange; these three columns exist so the order detail can
     # show the attribution without a second query on every read.

@@ -29,7 +29,12 @@ from src.services.blacklist import is_driver_blacklisted
 from src.services.deligo_integration import CLOSED_WFM_STATUS_IDS, STATUS_CODE_MAP, get_status_description_service
 from src.services.events import publish_order_event
 from src.services.geocode_quota import consume_geocode_quota
-from src.services.notifications import STATUS_LABEL_BY_WFM_ID, event_type_for_status
+from src.services.notifications import (
+    STATUS_LABEL_BY_WFM_ID,
+    describe_status,
+    event_type_for_status,
+)
+from src.services.queue_alerts import notify_queue_positions
 from src.services.delivery import _geocode, _build_tracking_url
 
 logger = logging.getLogger(__name__)
@@ -586,8 +591,18 @@ def change_status_endpoint(
                 int(payload.status_id), "Шинэчлэгдсэн"
             ),
             "status_description": effective_description,
+            # Pre-punctuated so the generic templates can append the driver's
+            # note without printing a bare "Тайлбар:" when there is none.
+            "status_description_line": describe_status(effective_description),
         },
     )
+
+    # This order leaving the queue moves everyone behind it one step closer, so
+    # the customer who is now `NOTIFY_QUEUE_ALERT_POSITION` stops away gets the
+    # heads-up. Runs for every status change, not just terminal ones: a driver
+    # who defers an order ("Маргааш авна") has shortened today's queue exactly
+    # as much as one who delivered it.
+    notify_queue_positions(repo, order.driver_id if order else None)
 
     warning = result.get("warning") if isinstance(result, dict) else None
     response: Dict[str, Any] = {"status": "ok"}

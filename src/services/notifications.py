@@ -32,14 +32,31 @@ TRACKING_URL_PREFIX = os.getenv("TRACKING_URL_PREFIX", "https://map.deligoalpha.
 # notification icon and the in-app toast glyph.
 _DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
     "driver_accepted": {
-        "title": "Жолооч захиалгыг хүлээн авлаа",
-        "body": "Таны #{sales_number} захиалгыг жолооч хүлээн авч, хүргэлтэд бэлтгэж байна.",
+        "title": "Жолооч барааг хүлээн авлаа",
+        "body": "Таны хүргэлтийн барааг жолооч хүлээн авч, хүргэлтэд гарлаа.",
         "icon": "local_shipping",
-        "urgency": "normal",
+        "urgency": "high",
     },
+    # Fired once per order when the driver's remaining queue puts this delivery
+    # `NOTIFY_QUEUE_ALERT_POSITION` stops away — see src/services/queue_alerts.py.
+    # The count sits inside `{queue_position_text}` rather than being a literal
+    # "2" so raising the threshold cannot make the sentence a lie, and so the
+    # "no deliveries left before yours" case can be a different clause instead
+    # of "0 хүргэлтийн дараа".
+    "delivery_queue_near": {
+        "title": "Таны ээлж ойртлоо",
+        "body": "Таны захиалга {queue_position_text}. Утсаа нээлттэй байлгаарай.",
+        "icon": "pending_actions",
+        "urgency": "high",
+    },
+    # Same customer-facing moment as `driver_accepted`, reached by the other
+    # path: the driver app starts a route through /api/delivery/{id}/start,
+    # while a status set straight to wfm 8 comes through changestatus. Both mean
+    # "the driver has your goods and has left", so both carry that sentence —
+    # a customer who saw one of them must not later read a different story.
     "delivery_started": {
-        "title": "Хүргэлт эхэллээ",
-        "body": "Жолооч таны #{sales_number} захиалгатай замд гарлаа.",
+        "title": "Хүргэлтэд гарлаа",
+        "body": "Таны хүргэлтийн барааг жолооч хүлээн авч, хүргэлтэд гарлаа.",
         "icon": "navigation",
         "urgency": "high",
     },
@@ -57,19 +74,51 @@ _DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
     },
     "delivery_completed": {
         "title": "Хүргэлт амжилттай боллоо",
-        "body": "Таны #{sales_number} захиалга хүргэгдлээ. Баярлалаа!",
+        "body": "Таны захиалга амжилттай хүргэгдлээ. Баярлалаа.",
         "icon": "task_alt",
         "urgency": "high",
     },
+    # Every "хүргэгдээгүй" status the customer is told about by name, one
+    # template each. They were a single generic `delivery_failed` before, which
+    # meant the customer read "төлөв: Утсаа аваагүй" instead of a sentence that
+    # says what actually happened and what happens next.
+    "delivery_no_answer": {
+        "title": "Утсаа аваагүй",
+        "body": "Жолооч тантай холбогдохыг оролдсон боловч утсаа аваагүй байна.",
+        "icon": "phone_missed",
+        "urgency": "high",
+    },
+    "delivery_unreachable": {
+        "title": "Дугаар холбогдохгүй",
+        "body": "Таны бүртгэлтэй утасны дугаарт холбогдох боломжгүй байна.",
+        "icon": "phone_disabled",
+        "urgency": "high",
+    },
+    "delivery_tomorrow": {
+        "title": "Маргааш хүргэгдэнэ",
+        "body": "Таны захиалгыг маргааш хүлээн авахаар тэмдэглэлээ.",
+        "icon": "event_repeat",
+        "urgency": "normal",
+    },
+    "delivery_later": {
+        "title": "Дараа хүргэгдэнэ",
+        "body": "Таны захиалгыг дараа хүлээн авахаар тэмдэглэлээ.",
+        "icon": "more_time",
+        "urgency": "normal",
+    },
+    # The "бусад төлөв" catch-all: name the status the driver picked and append
+    # their own note when there is one. `status_description_line` arrives
+    # pre-punctuated (or empty) from the publisher — see `describe_status` —
+    # because a template cannot express "only if non-empty".
     "delivery_failed": {
         "title": "Хүргэлт амжилтгүй боллоо",
-        "body": "Таны #{sales_number} захиалгын төлөв: {status_label}.",
+        "body": "Таны захиалгын төлөв: {status_label}.{status_description_line}",
         "icon": "error",
         "urgency": "high",
     },
     "order_cancelled": {
         "title": "Захиалга цуцлагдлаа",
-        "body": "Таны #{sales_number} захиалга цуцлагдсан байна.",
+        "body": "Та захиалгаа хүлээн авахаас татгалзсан төлөв бүртгэгдлээ.",
         "icon": "cancel",
         "urgency": "high",
     },
@@ -81,7 +130,7 @@ _DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
     },
     "status_changed": {
         "title": "Захиалгын төлөв өөрчлөгдлөө",
-        "body": "Таны #{sales_number} захиалгын төлөв: {status_label}.",
+        "body": "Таны захиалгын төлөв: {status_label}.{status_description_line}",
         "icon": "info",
         "urgency": "normal",
     },
@@ -375,17 +424,47 @@ STATUS_LABEL_BY_WFM_ID: Dict[int, str] = {
 
 # Deligo wfm status id -> the event type a customer should be notified about.
 # Statuses absent from this map produce a generic `status_changed`.
+#
+# The flow the customer sees is: driver_accepted ("хүргэлтэд гарлаа") →
+# delivery_queue_near ("2 хүргэлтийн дараа") → delivery_completed, or one of the
+# named "хүргэгдээгүй" reasons. Only the reasons Deligo has a distinct status for
+# get their own template; 16 ("Хаягаар очсон") and anything unmapped fall to the
+# generic templates, which print the status name plus the driver's note.
 WFM_STATUS_EVENT_TYPES: Dict[int, str] = {
     3: "delivery_completed",
     8: "driver_accepted",
     12: "order_cancelled",
-    13: "delivery_failed",
-    14: "delivery_failed",
-    15: "delivery_failed",
+    13: "delivery_tomorrow",
+    14: "delivery_no_answer",
+    15: "delivery_unreachable",
     16: "delivery_failed",
-    17: "delivery_failed",
+    17: "delivery_later",
     23: "status_changed",
 }
+
+
+def describe_status(status_description: Any) -> str:
+    """The trailing " Тайлбар: …" clause for the generic templates, or "".
+
+    A template cannot say "include this only when it is set" — `_SafeDict` turns
+    a missing key into an empty string but leaves the label and punctuation
+    around it, so an order with no note would render "төлөв: Хаягаар очсон.
+    Тайлбар:". Publishers therefore pass the whole clause, already punctuated.
+    """
+    text = str(status_description or "").strip()
+    return f" Тайлбар: {text}" if text else ""
+
+
+def describe_queue_position(position: int) -> str:
+    """"2 хүргэлтийн дараа хүргэгдэхээр байна" — or the zero-deliveries wording.
+
+    Same reason as `describe_status`: the sentence changes shape at 0, and a
+    format string cannot branch. An order with nothing ahead of it is next, not
+    "0 хүргэлтийн дараа".
+    """
+    if position <= 0:
+        return "дараагийн хүргэлт байна"
+    return f"{position} хүргэлтийн дараа хүргэгдэхээр байна"
 
 
 def _is_status_muted(status_id: Any) -> bool:

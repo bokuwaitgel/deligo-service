@@ -40,6 +40,7 @@ from src.services.events import publish_order_event
 from src.services.deligo_integration import OPEN_STATUS_CODES, change_sales_status, get_company_sales, get_driver_sales, get_sales_detail, get_status_description_service, structure_sales_detail
 from src.services.geocode_quota import consume_geocode_quota
 from src.services.middleware_order import get_orders_by_sales_numbers
+from src.services.queue_alerts import notify_queue_positions
 
 logger = logging.getLogger(__name__)
 
@@ -662,6 +663,10 @@ def start_delivery_order(
         "delivery_started",
         {"sales_number": delivery.sales_number, "wfm_status_id": 8, "driver_id": delivery.driver_id},
     )
+    # The route just became real, so the customers at the front of it can be told
+    # how close they are. Without this the queue alert would only ever fire after
+    # the first delivery closed, i.e. never for a one- or two-order route.
+    notify_queue_positions(repo, delivery.driver_id)
     return {"status": "ok", "sales_id": sales_id, "sales_number": delivery.sales_number, "wfm_status_id": 8}
 
 

@@ -72,10 +72,18 @@ KNOWN_PLACEHOLDERS = {
     "sales_number",
     "status_label",
     "status_description",
+    # The driver's note as a ready-made " Тайлбар: …" clause, empty when there
+    # is none. Prefer it over `status_description` in a body — the raw field
+    # leaves any label you write around it stranded on orders with no note.
+    "status_description_line",
     "wfm_status_id",
     "distance_text",
     "formatted_address",
     "changed_by_name",
+    # Queue-position heads-up: the count, and the ready-made clause that also
+    # covers "nothing ahead of you" without reading "0 хүргэлтийн дараа".
+    "queue_position",
+    "queue_position_text",
     "admin_title",
     "admin_body",
 }
