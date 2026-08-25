@@ -113,14 +113,6 @@ def get_notification_log_repository():
         session.close()
 
 
-def get_notification_icon_repository():
-    from src.repositories.notification_icon import NotificationIconRepository
-
-    session = _get_session_factory()()
-    try:
-        yield NotificationIconRepository(session)
-    finally:
-        session.close()
 
 
 def get_notification_rule_override_repository():

@@ -8,18 +8,26 @@ The two calls we actually need:
 - POST /api/sales/integration  — list sales for a driver (by driver_id)
 - POST /api/sales/get          — fetch full detail for one sales_number
 
+Outbound reports (best effort, never raise):
+
+- POST /api/sales/update/address     — the driver moved the delivery pin
+- POST /api/sales/notification       — what the customer was told, and when
+
 Driver-related fields come from this service at read time; we no longer
 store driver_id/driver_name locally.
 
 Configure via env:
     DELIGO_API_URL       (default https://api.deligo.mn)
+    DELIGO_NOTIFY_PATH   (default /api/sales/notification; empty = reports off)
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import time
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -465,6 +473,102 @@ def push_address_update(
         return False
     print(f"[Deligo] update/address OK for sales_id={sales_id}")
     return True
+
+
+# Where Deligo receives "we told the customer this" reports. Set the env var to
+# empty to turn the reports off without a deploy — useful if Deligo's endpoint
+# starts erroring, since a failing report is pure noise to us but one warning
+# line per delivery in the log.
+DELIGO_NOTIFY_PATH = os.getenv("DELIGO_NOTIFY_PATH", "/api/sales/notification").strip()
+
+# Own executor rather than webpush's: this POST must not be able to fill the
+# push sender's queue, and a slow Deligo must not delay a customer's push.
+_notify_executor: Optional[ThreadPoolExecutor] = None
+_notify_disabled_logged = False
+
+
+def _get_notify_executor() -> ThreadPoolExecutor:
+    global _notify_executor
+    if _notify_executor is None:
+        _notify_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="deligo-notify"
+        )
+        atexit.register(lambda: _notify_executor and _notify_executor.shutdown(wait=False))
+    return _notify_executor
+
+
+def _post_notification_sent(payload: Dict[str, Any]) -> None:
+    """The blocking half of :func:`push_notification_sent`, run off-thread."""
+    sales_id = payload.get("id")
+    r = _post_with_retry(DELIGO_NOTIFY_PATH, payload, use_service_auth=True)
+    if r is None or r.status_code != 200:
+        status = r.status_code if r is not None else "no response"
+        logger.warning(
+            "Deligo %s returned %s for sales_id=%s",
+            DELIGO_NOTIFY_PATH,
+            status,
+            sales_id,
+        )
+        print(f"[Deligo] notify report failed ({status}) for sales_id={sales_id}")
+        return
+    print(f"[Deligo] notify report OK for sales_id={sales_id}")
+
+
+def push_notification_sent(
+    sales_id: str,
+    event_type: str,
+    notification: Dict[str, Any],
+    *,
+    sales_number: Optional[str] = None,
+    event_id: Optional[str] = None,
+    device_count: int = 0,
+) -> None:
+    """Report a customer notification to Deligo, the way an address edit is.
+
+    Same contract as :func:`push_address_update` — best effort, never raises —
+    but dispatched to a background thread. The caller is inside
+    ``publish_order_event``, which runs in the middle of the driver's
+    status-change request: a Deligo timeout there would be latency the driver
+    waits out for a report nobody is reading in real time.
+
+    No-ops when ``DELIGO_NOTIFY_PATH`` is set to empty — the kill switch for
+    when Deligo's endpoint starts failing and the retries are only filling logs.
+    """
+    global _notify_disabled_logged
+    if not DELIGO_NOTIFY_PATH:
+        if not _notify_disabled_logged:
+            logger.info(
+                "DELIGO_NOTIFY_PATH is empty — notification reports to Deligo are disabled"
+            )
+            _notify_disabled_logged = True
+        return
+
+    payload: Dict[str, Any] = {
+        # Same key the other sales endpoints take the order identity under.
+        "id": str(sales_id),
+        "salesNumber": str(sales_number or sales_id),
+        "eventType": event_type,
+        "title": notification.get("title", ""),
+        "body": notification.get("body", ""),
+        "urgency": notification.get("urgency", "normal"),
+        "trackingUrl": notification.get("url", ""),
+        # How many browsers the push actually went to. 0 is normal and not a
+        # failure: the customer may only ever have had the tracking tab open.
+        "deviceCount": device_count,
+        "sentAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if event_id:
+        # Lets Deligo dedupe a retry, and lets our notification log be joined
+        # against whatever they store.
+        payload["eventId"] = event_id
+
+    print(f"[Deligo] POST {DELIGO_NOTIFY_PATH}  id={sales_id}  event={event_type}")
+    try:
+        _get_notify_executor().submit(_post_notification_sent, payload)
+    except Exception:
+        logger.warning(
+            "Could not queue Deligo notification report for sales_id=%s", sales_id, exc_info=True
+        )
 
 
 def structure_sales_detail(raw: Dict[str, Any]) -> Dict[str, Any]:

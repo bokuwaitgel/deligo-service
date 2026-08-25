@@ -318,6 +318,23 @@ def _record_sent_notification(
             )
         finally:
             session.close()
+
+        # Report it upstream too, so Deligo's own order timeline shows what the
+        # customer was told. Hooked here rather than at each publish site
+        # because this is the one place every *visible* notification passes
+        # through — muted statuses and copy-less events have already returned
+        # above, so Deligo never hears about a message nobody saw. The call
+        # queues onto a background thread and never raises.
+        from src.services.deligo_integration import push_notification_sent
+
+        push_notification_sent(
+            sales_id,
+            event_type,
+            notification,
+            sales_number=str((data or {}).get("sales_number") or sales_id),
+            event_id=event_id,
+            device_count=devices,
+        )
     except Exception:
         logger.warning("Could not record notification history for %s", sales_id, exc_info=True)
 

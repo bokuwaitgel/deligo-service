@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # on purpose: both are composed by `build_notification` from the tracking prefix
 # and the order id, and an operator editing them would break the click-through
 # link or the one-notification-per-event-type replacement rule.
-EDITABLE_TEMPLATE_FIELDS = ("title", "body", "icon", "urgency", "icon_image_id")
+EDITABLE_TEMPLATE_FIELDS = ("title", "body", "icon", "urgency")
 
 # Urgency is a closed set — the frontend switches on it for toast styling and
 # the service worker for `requireInteraction`.

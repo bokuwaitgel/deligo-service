@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deligo Customer Notifications</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.65;
+      color: #1e1e2e;
+      background: #fff;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 40px;
+    }
+
+    /* ── Typography ───────────────────────────────────────────── */
+    h1 { font-size: 28px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+    h2 { font-size: 20px; font-weight: 700; color: #0f172a; margin: 40px 0 12px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
+    h3 { font-size: 15px; font-weight: 700; color: #1e40af; margin: 28px 0 8px; }
+    h4 { font-size: 13px; font-weight: 700; color: #374151; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+    p  { margin-bottom: 10px; }
+    ul, ol { margin: 8px 0 10px 20px; }
+    li { margin-bottom: 4px; }
+    a  { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    strong { font-weight: 600; }
+
+    /* ── Cover ────────────────────────────────────────────────── */
+    .cover {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-left: 5px solid #2563eb;
+      padding-left: 20px;
+      margin-bottom: 48px;
+    }
+    .cover .subtitle { font-size: 13px; color: #6b7280; }
+    .cover .meta { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+
+    /* ── Callouts ─────────────────────────────────────────────── */
+    .callout {
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin: 14px 0;
+      font-size: 13px;
+    }
+    .callout.info  { background: #eff6ff; border-left: 4px solid #3b82f6; color: #1e40af; }
+    .callout.warn  { background: #fffbeb; border-left: 4px solid #f59e0b; color: #92400e; }
+    .callout.note  { background: #f0fdf4; border-left: 4px solid #22c55e; color: #166534; }
+
+    /* ── Code ─────────────────────────────────────────────────── */
+    code {
+      font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+      font-size: 12.5px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 16px 18px;
+      overflow-x: auto;
+      margin: 10px 0 16px;
+      line-height: 1.55;
+    }
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      font-size: 12.5px;
+    }
+
+    /* ── Tables ───────────────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin: 10px 0 16px;
+    }
+    thead tr { background: #1e40af; color: #fff; }
+    thead th { padding: 8px 12px; text-align: left; font-weight: 600; }
+    tbody tr:nth-child(odd)  { background: #f8fafc; }
+    tbody tr:nth-child(even) { background: #fff; }
+    tbody td { padding: 7px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    tbody td code { background: #e2e8f0; border: none; }
+
+    /* ── Badges ───────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 2px 7px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    .badge.get    { background: #dcfce7; color: #166534; }
+    .badge.post   { background: #dbeafe; color: #1e40af; }
+    .badge.req    { background: #fee2e2; color: #991b1b; }
+    .badge.opt    { background: #f3f4f6; color: #374151; }
+    .badge.open   { background: #fef9c3; color: #713f12; }
+    .badge.closed { background: #fce7f3; color: #9d174d; }
+
+    /* ── Section divider ──────────────────────────────────────── */
+    hr { border: none; border-top: 1px solid #e2e8f0; margin: 36px 0; }
+
+    /* ── Flow strip ───────────────────────────────────────────── */
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 8px;
+      margin: 14px 0 18px;
+    }
+    .flow-step {
+      flex: 1 1 150px;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #2563eb;
+      border-radius: 6px;
+      padding: 8px 12px;
+    }
+    .flow-step .when { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+    .flow-step .what { font-size: 12.5px; font-weight: 600; color: #0f172a; }
+    .flow-step .ev   { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; color: #1e40af; }
+    .flow-step.fail  { border-left-color: #dc2626; }
+    .flow-step.fail .ev { color: #991b1b; }
+
+    /* ── Print ────────────────────────────────────────────────── */
+    @media print {
+      body { padding: 20px 24px; font-size: 13px; }
+      h2   { page-break-before: auto; }
+      pre, table, .callout { page-break-inside: avoid; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Deligo Customer Notifications</h1>
+  <div class="subtitle">What the customer is told, when it is sent, and what the map service reports back to Deligo.</div>
+  <div class="meta">deligo-service &middot; companion to <a href="deligo-integration.html">Deligo Integration Documentation</a></div>
+</div>
+
+<h2>Table of Contents</h2>
+<ol>
+  <li><a href="#overview">Overview</a></li>
+  <li><a href="#catalogue">Notification catalogue</a></li>
+  <li><a href="#mapping">Status &rarr; event mapping</a></li>
+  <li><a href="#queue">Queue-position alert</a></li>
+  <li><a href="#placeholders">Template placeholders</a></li>
+  <li><a href="#report">Outbound report to Deligo</a></li>
+  <li><a href="#channels">Delivery channels</a></li>
+  <li><a href="#overrides">Operator overrides</a></li>
+  <li><a href="#config">Configuration reference</a></li>
+</ol>
+
+<hr />
+
+<h2 id="overview">1. Overview</h2>
+
+<p>
+  A customer tracking an order is told three things, in this order: the driver has
+  their goods, the driver is nearly at them, and how it ended. Everything else is
+  a variation on the third.
+</p>
+
+<div class="flow">
+  <div class="flow-step">
+    <div class="when">Driver takes the goods</div>
+    <div class="what">Хүргэлтэд гарлаа</div>
+    <div class="ev">delivery_started</div>
+  </div>
+  <div class="flow-step">
+    <div class="when">2 deliveries ahead</div>
+    <div class="what">Таны ээлж ойртлоо</div>
+    <div class="ev">delivery_queue_near</div>
+  </div>
+  <div class="flow-step">
+    <div class="when">Хүргэсэн</div>
+    <div class="what">Амжилттай хүргэгдлээ</div>
+    <div class="ev">delivery_completed</div>
+  </div>
+  <div class="flow-step fail">
+    <div class="when">Any other status</div>
+    <div class="what">Хүргэгдээгүй шалтгаан</div>
+    <div class="ev">delivery_no_answer, …</div>
+  </div>
+</div>
+
+<p>
+  Every piece of copy is composed <strong>server-side</strong>. The browser renders
+  whatever <code>title</code> / <code>body</code> / <code>url</code> the event carries
+  and never writes its own sentence, so wording changes are a config change rather
+  than a frontend deploy.
+</p>
+
+<div class="callout info">
+  <strong>Source of truth.</strong> Templates live in
+  <code>src/services/notifications.py</code>. A status that has no template, or one an
+  operator has muted, still publishes its event — the tracking page refreshes — but
+  nothing pops up and nothing is reported to Deligo.
+</div>
+
+<hr />
+
+<h2 id="catalogue">2. Notification catalogue</h2>
+
+<p>Default copy, before any environment or operator override.</p>
+
+<table>
+  <thead>
+    <tr><th style="width:26%">Event type</th><th style="width:22%">Title</th><th>Body</th><th style="width:11%">Urgency</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>delivery_started</code></td>
+      <td>Хүргэлтэд гарлаа</td>
+      <td>Таны хүргэлтийн барааг жолооч хүлээн авч, хүргэлтэд гарлаа.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>driver_accepted</code></td>
+      <td>Жолооч барааг хүлээн авлаа</td>
+      <td>Таны хүргэлтийн барааг жолооч хүлээн авч, хүргэлтэд гарлаа.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>delivery_queue_near</code></td>
+      <td>Таны ээлж ойртлоо</td>
+      <td>Таны захиалга <code>{queue_position_text}</code>. Утсаа нээлттэй байлгаарай.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>delivery_completed</code></td>
+      <td>Хүргэлт амжилттай боллоо</td>
+      <td>Таны захиалга амжилттай хүргэгдлээ. Баярлалаа.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>delivery_no_answer</code></td>
+      <td>Утсаа аваагүй</td>
+      <td>Жолооч тантай холбогдохыг оролдсон боловч утсаа аваагүй байна.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>delivery_unreachable</code></td>
+      <td>Дугаар холбогдохгүй</td>
+      <td>Таны бүртгэлтэй утасны дугаарт холбогдох боломжгүй байна.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>delivery_tomorrow</code></td>
+      <td>Маргааш хүргэгдэнэ</td>
+      <td>Таны захиалгыг маргааш хүлээн авахаар тэмдэглэлээ.</td>
+      <td>normal</td>
+    </tr>
+    <tr>
+      <td><code>delivery_later</code></td>
+      <td>Дараа хүргэгдэнэ</td>
+      <td>Таны захиалгыг дараа хүлээн авахаар тэмдэглэлээ.</td>
+      <td>normal</td>
+    </tr>
+    <tr>
+      <td><code>order_cancelled</code></td>
+      <td>Захиалга цуцлагдлаа</td>
+      <td>Та захиалгаа хүлээн авахаас татгалзсан төлөв бүртгэгдлээ.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>delivery_failed</code></td>
+      <td>Хүргэлт амжилтгүй боллоо</td>
+      <td>Таны захиалгын төлөв: <code>{status_label}</code>.<code>{status_description_line}</code></td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>status_changed</code></td>
+      <td>Захиалгын төлөв өөрчлөгдлөө</td>
+      <td>Таны захиалгын төлөв: <code>{status_label}</code>.<code>{status_description_line}</code></td>
+      <td>normal</td>
+    </tr>
+    <tr>
+      <td><code>driver_nearby</code></td>
+      <td>Жолооч ойртож байна</td>
+      <td>Жолооч танаас ойролцоогоор <code>{distance_text}</code> зайд байна.</td>
+      <td>high</td>
+    </tr>
+    <tr>
+      <td><code>driver_location</code></td>
+      <td>Жолоочийн байршил шинэчлэгдлээ</td>
+      <td>Жолоочийн байршил газрын зураг дээр шинэчлэгдлээ.</td>
+      <td>low</td>
+    </tr>
+    <tr>
+      <td><code>address_updated</code></td>
+      <td>Хүргэлтийн хаяг шинэчлэгдлээ</td>
+      <td>Хүргэлтийн байршлыг <code>{changed_by_name}</code> шинэчиллээ: <code>{formatted_address}</code></td>
+      <td>normal</td>
+    </tr>
+    <tr>
+      <td><code>admin_message</code></td>
+      <td><code>{admin_title}</code></td>
+      <td><code>{admin_body}</code> — free-form message sent by an operator</td>
+      <td>high</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout note">
+  <strong>Two events, one sentence.</strong> <code>delivery_started</code> and
+  <code>driver_accepted</code> are the same customer-facing moment reached by two
+  code paths: the driver app starts a route through
+  <code>POST /api/delivery/{sales_id}/start</code>, while a status set straight to
+  wfm 8 arrives through <code>changestatus</code>. Both carry the same body so a
+  customer never reads two different stories about one event.
+</div>
+
+<div class="callout warn">
+  <strong><code>driver_location</code> is never shown.</strong> It fires on every GPS
+  ping and only moves the marker. It is suppressed from push, from the notification
+  log, and from the Deligo report — it is movement, not a message.
+</div>
+
+<hr />
+
+<h2 id="mapping">3. Status &rarr; event mapping</h2>
+
+<p>
+  A driver's status change resolves to an event type through
+  <code>event_type_for_status()</code>. A status in neither the table below nor an
+  operator rule falls back to <code>status_changed</code>.
+</p>
+
+<table>
+  <thead>
+    <tr><th style="width:10%">wfm id</th><th style="width:28%">Label</th><th style="width:28%">Event type</th><th>Customer reads</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>Хүлээгдэж байна</td><td><code>status_changed</code></td><td>Generic — status name</td></tr>
+    <tr><td>3</td><td>Хүргэсэн</td><td><code>delivery_completed</code></td><td>Амжилттай хүргэгдлээ</td></tr>
+    <tr><td>5</td><td>Хуваарилсан</td><td><code>status_changed</code></td><td>Generic — status name</td></tr>
+    <tr><td>8</td><td>Жолооч хүлээн авсан</td><td><code>driver_accepted</code></td><td>Хүргэлтэд гарлаа</td></tr>
+    <tr><td>12</td><td>Авахаа больсон</td><td><code>order_cancelled</code></td><td>Татгалзсан төлөв бүртгэгдлээ</td></tr>
+    <tr><td>13</td><td>Маргааш авна</td><td><code>delivery_tomorrow</code></td><td>Маргааш хүлээн авахаар тэмдэглэлээ</td></tr>
+    <tr><td>14</td><td>Утсаа аваагүй</td><td><code>delivery_no_answer</code></td><td>Утсаа аваагүй байна</td></tr>
+    <tr><td>15</td><td>Дугаар холбогдохгүй</td><td><code>delivery_unreachable</code></td><td>Холбогдох боломжгүй байна</td></tr>
+    <tr><td>16</td><td>Хаягаар очсон</td><td><code>delivery_failed</code></td><td>Generic — status name + driver's note</td></tr>
+    <tr><td>17</td><td>Дараа авна</td><td><code>delivery_later</code></td><td>Дараа хүлээн авахаар тэмдэглэлээ</td></tr>
+    <tr><td>23</td><td>Сольж авсан</td><td><code>status_changed</code></td><td>Generic — status name + driver's note</td></tr>
+  </tbody>
+</table>
+
+<p>
+  The two generic templates append the driver's own note when there is one. They read
+  it from <code>{status_description_line}</code>, not from the raw description —
+  see <a href="#placeholders">&sect;5</a>.
+</p>
+
+<hr />
+
+<h2 id="queue">4. Queue-position alert</h2>
+
+<p>
+  <code>delivery_queue_near</code> is the only notification with no status change of
+  its own to hang off. Nothing in Deligo fires when an order becomes third in line —
+  it becomes third because a <em>different</em> order ahead of it closed. So the map
+  service recomputes the driver's queue after every write that can shorten it.
+</p>
+
+<h4>Triggers</h4>
+<ul>
+  <li><code>POST /api/auth/orders/changestatus</code> — any status change, not only terminal ones. A driver who defers an order has shortened today's queue exactly as much as one who delivered it.</li>
+  <li><code>POST /api/delivery/{sales_id}/start</code> — the route became real. Without this a one- or two-order route would never alert at all.</li>
+</ul>
+
+<h4>Selection</h4>
+<p>
+  Open orders for the driver are sorted by the driver's confirmed <code>sort_order</code>
+  (orders with none sink to the end — an unsorted order is genuinely last as far as
+  anyone can tell). Every order at position &le; <code>NOTIFY_QUEUE_ALERT_POSITION</code>
+  that has not already been alerted is notified once.
+</p>
+
+<div class="callout info">
+  <strong>Why &le; and not exactly 2.</strong> A driver who closes two orders in quick
+  succession, or a route re-sort that moves an order forward, can skip the exact
+  position. With a strict match the customer nearest to being delivered — the one the
+  heads-up is for — is the one who never gets it.
+</div>
+
+<h4>Exactly once</h4>
+<p>
+  <code>delivery_orders.queue_alert_sent_at</code> records that the alert went out. It
+  is a column rather than an in-memory flag because every API replica evaluates the
+  same queue and would otherwise each send one. The row is marked <em>before</em> the
+  event is published: a crash between the two costs one notification, while the
+  reverse order costs the customer a duplicate on every later status change.
+</p>
+
+<h4>Wording</h4>
+<p>
+  The count sits inside <code>{queue_position_text}</code> rather than being a literal
+  "2", so raising the threshold cannot make the sentence a lie, and position 0 reads
+  as a different clause instead of "0 хүргэлтийн дараа".
+</p>
+
+<table>
+  <thead><tr><th style="width:18%">Position</th><th>Rendered body</th></tr></thead>
+  <tbody>
+    <tr><td>2</td><td>Таны захиалга <strong>2 хүргэлтийн дараа хүргэгдэхээр байна</strong>. Утсаа нээлттэй байлгаарай.</td></tr>
+    <tr><td>1</td><td>Таны захиалга <strong>1 хүргэлтийн дараа хүргэгдэхээр байна</strong>. Утсаа нээлттэй байлгаарай.</td></tr>
+    <tr><td>0</td><td>Таны захиалга <strong>дараагийн хүргэлт байна</strong>. Утсаа нээлттэй байлгаарай.</td></tr>
+  </tbody>
+</table>
+
+<hr />
+
+<h2 id="placeholders">5. Template placeholders</h2>
+
+<p>
+  Templates are Python format strings resolved against the event payload. An unknown
+  placeholder renders as an empty string at send time, so the API <strong>rejects</strong>
+  one on save rather than shipping a blank sentence — a 422 the operator can fix beats
+  a hole in the copy no one notices.
+</p>
+
+<table>
+  <thead><tr><th style="width:26%">Placeholder</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>sales_number</code></td><td>Human-facing order code. Defaulted to the sales id when absent.</td></tr>
+    <tr><td><code>status_label</code></td><td>Mongolian status name for the wfm id.</td></tr>
+    <tr><td><code>status_description</code></td><td>The driver's raw note. Prefer the clause below.</td></tr>
+    <tr><td><code>status_description_line</code></td><td>Ready-made <code> Тайлбар: …</code> clause, <strong>empty</strong> when there is no note.</td></tr>
+    <tr><td><code>queue_position</code></td><td>How many deliveries are ahead of this one (integer).</td></tr>
+    <tr><td><code>queue_position_text</code></td><td>Ready-made clause for that count, including the zero case.</td></tr>
+    <tr><td><code>distance_text</code></td><td>Driver's distance, pre-formatted (<code>350 м</code> / <code>2.4 км</code>).</td></tr>
+    <tr><td><code>formatted_address</code></td><td>New delivery address after a pin edit.</td></tr>
+    <tr><td><code>changed_by_name</code></td><td>Who moved the pin.</td></tr>
+    <tr><td><code>wfm_status_id</code></td><td>Numeric Deligo status id.</td></tr>
+    <tr><td><code>admin_title</code>, <code>admin_body</code></td><td>Operator's manual message.</td></tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <strong>Why the pre-built clauses exist.</strong> A format string cannot say "include
+  this only when it is set". Writing <code>Тайлбар: {status_description}</code> leaves
+  a bare <code>Тайлбар:</code> stranded on every order with no note, so the publisher
+  passes the whole clause — punctuation included — or an empty string.
+</div>
+
+<hr />
+
+<h2 id="report">6. Outbound report to Deligo</h2>
+
+<p>
+  Every notification the customer actually sees is reported back to Deligo, so the
+  order's timeline in the main system shows what they were told and when.
+</p>
+
+<h3><span class="badge post">POST</span> <code>/api/sales/notification</code></h3>
+
+<table>
+  <thead><tr><th style="width:26%">&nbsp;</th><th>&nbsp;</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Base URL</strong></td><td><code>DELIGO_API_URL</code> (default <code>https://api.deligo.mn</code>)</td></tr>
+    <tr><td><strong>Path</strong></td><td><code>DELIGO_NOTIFY_PATH</code> (default <code>/api/sales/notification</code>)</td></tr>
+    <tr><td><strong>Auth</strong></td><td><code>Authorization: Bearer &lt;service token&gt;</code>, from <code>POST /api/user/login</code> with <code>DELIGO_API_EMAIL</code> / <code>DELIGO_API_PASSWORD</code>. A <code>401</code> forces one re-login and one retry.</td></tr>
+    <tr><td><strong>Timeout</strong></td><td>10s</td></tr>
+    <tr><td><strong>Success</strong></td><td>HTTP <code>200</code>. Any other status is logged and dropped.</td></tr>
+  </tbody>
+</table>
+
+<h4>Request body</h4>
+
+<pre><code>{
+  "id":          "1773113766311954",
+  "salesNumber": "ORD-77",
+  "eventType":   "delivery_completed",
+  "title":       "Хүргэлт амжилттай боллоо",
+  "body":        "Таны захиалга амжилттай хүргэгдлээ. Баярлалаа.",
+  "urgency":     "high",
+  "trackingUrl": "https://map.deligoalpha.mn/track/ORD-77",
+  "deviceCount": 2,
+  "sentAt":      "2026-08-25T09:18:16.129678+00:00",
+  "eventId":     "9f2c1ab34de84f0197c5b1d0a6e2f8ce"
+}</code></pre>
+
+<table>
+  <thead>
+    <tr><th style="width:20%">Field</th><th style="width:12%">Type</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>string</td><td>Order identity — the same <code>sales_id</code> the other <code>/api/sales/*</code> endpoints key on.</td></tr>
+    <tr><td><code>salesNumber</code></td><td>string</td><td>Human-facing order code. Falls back to <code>id</code> when the event carries none.</td></tr>
+    <tr><td><code>eventType</code></td><td>string</td><td>One of the types in <a href="#catalogue">&sect;2</a>. Operators can add new ones, so treat it as an open set.</td></tr>
+    <tr><td><code>title</code></td><td>string</td><td>Rendered notification title, after all overrides.</td></tr>
+    <tr><td><code>body</code></td><td>string</td><td>Rendered body, placeholders already substituted.</td></tr>
+    <tr><td><code>urgency</code></td><td>string</td><td><code>low</code> | <code>normal</code> | <code>high</code>.</td></tr>
+    <tr><td><code>trackingUrl</code></td><td>string</td><td>Public tracking link the notification opens when tapped.</td></tr>
+    <tr><td><code>deviceCount</code></td><td>integer</td><td>Browsers the web push went to. <strong>0 is normal</strong>, not a failure — the customer may only ever have had the tracking tab open.</td></tr>
+    <tr><td><code>sentAt</code></td><td>string</td><td>ISO-8601, UTC.</td></tr>
+    <tr><td><code>eventId</code></td><td>string</td><td>32-char hex, unique per notification. Use it to dedupe a retry and to join against the map service's own log.</td></tr>
+  </tbody>
+</table>
+
+<h4>When it fires</h4>
+<p>
+  Once per <em>visible</em> notification, from the publish side only. Muted statuses,
+  copy-less events and <code>driver_location</code> return before the report is built,
+  so Deligo never hears about a message nobody saw. Multiple API replicas fan the
+  event out to their own subscribers, but only the publishing worker reports it — one
+  notification, one POST.
+</p>
+
+<h4>Failure behaviour</h4>
+<ul>
+  <li>Dispatched to a background thread. The caller is inside the driver's status-change request; a Deligo timeout must not be latency the driver waits out.</li>
+  <li>Never raises. A failed report is a reporting gap; a failed publish is a customer who is not told their driver arrived.</li>
+  <li>No retry queue. A non-200 logs one warning line and is dropped.</li>
+</ul>
+
+<div class="callout warn">
+  <strong>Kill switch.</strong> Set <code>DELIGO_NOTIFY_PATH=</code> (empty) to stop the
+  reports without a deploy. Worth doing if the endpoint starts failing — the reports
+  are best-effort to us, but a failing one writes a warning line per delivery.
+</div>
+
+<hr />
+
+<h2 id="channels">7. Delivery channels</h2>
+
+<p>The same rendered notification reaches the customer by two paths, chosen by whether their tab is open.</p>
+
+<table>
+  <thead><tr><th style="width:22%">Channel</th><th style="width:26%">Reaches</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>SSE stream</td>
+      <td>Open tracking tab</td>
+      <td>Redis pub/sub fans the event across API replicas. A reconnect replays what was missed via <code>Last-Event-ID</code>; entries older than 15 minutes are dropped so a tab left open overnight does not wake to a burst.</td>
+    </tr>
+    <tr>
+      <td>Web Push</td>
+      <td>Closed tab</td>
+      <td>VAPID. Queued on a background thread, never blocking the publish. Requires <code>VAPID_PUBLIC_KEY</code> / <code>VAPID_PRIVATE_KEY</code> — without them push is off and the SSE stream still works.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  Both carry the same <code>tag</code> (<code>deligo-{sales_id}-{event_type}</code>), so a
+  repeat for one order and event type <strong>replaces</strong> the previous notification in
+  the OS tray instead of stacking a second one.
+</p>
+
+<hr />
+
+<h2 id="overrides">8. Operator overrides</h2>
+
+<p>Copy resolves through three layers. Later layers win field by field, not whole-template.</p>
+
+<ol>
+  <li><strong>Compiled-in defaults</strong> — <code>src/services/notifications.py</code>. Render with no network, which is what a driver in a stairwell has.</li>
+  <li><strong>Environment</strong> — <code>NOTIFY_TEMPLATES_JSON</code>, or <code>NOTIFY_&lt;EVENT_TYPE&gt;_TITLE</code> / <code>_BODY</code> / <code>_ICON</code> / <code>_URGENCY</code>. Resolved once per process.</li>
+  <li><strong>Admin panel</strong> — stored in Postgres, merged on every read, cached for <code>NOTIFY_OVERRIDE_TTL</code> seconds per worker.</li>
+</ol>
+
+<div class="callout warn">
+  <strong>An admin edit shadows a code change.</strong> A template an operator has saved
+  keeps its saved wording even after the default changes in a deploy. To adopt new
+  default copy, revert that template in the admin panel
+  (<code>DELETE /api/push/templates/{event_type}</code>).
+</div>
+
+<p>
+  Operators can also remap a status to a different event type, or mute it entirely. A
+  muted status still publishes its event — the tracking page refreshes — but nothing is
+  shown, logged, or reported.
+</p>
+
+<hr />
+
+<h2 id="config">9. Configuration reference</h2>
+
+<table>
+  <thead><tr><th style="width:34%">Variable</th><th style="width:20%">Default</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>DELIGO_NOTIFY_PATH</code></td><td><code>/api/sales/notification</code></td><td>Where notification reports are posted. Empty disables them.</td></tr>
+    <tr><td><code>NOTIFY_QUEUE_ALERT_POSITION</code></td><td><code>2</code></td><td>How many deliveries ahead trigger the heads-up.</td></tr>
+    <tr><td><code>NOTIFY_OVERRIDE_TTL</code></td><td><code>30</code></td><td>Seconds a worker serves cached admin overrides. Also the worst-case delay before an edit takes effect everywhere.</td></tr>
+    <tr><td><code>NOTIFY_TEMPLATES_JSON</code></td><td>—</td><td>Whole-map template override as a JSON blob.</td></tr>
+    <tr><td><code>TRACKING_URL_PREFIX</code></td><td><code>https://map.deligoalpha.mn/track/</code></td><td>Prefix for the link a notification opens.</td></tr>
+    <tr><td><code>NOTIFICATION_LOG_RETENTION_DAYS</code></td><td><code>30</code></td><td>How long sent-notification history is kept.</td></tr>
+    <tr><td><code>DRIVER_NEARBY_METERS</code></td><td><code>1000</code></td><td>Distance at which <code>driver_nearby</code> fires.</td></tr>
+    <tr><td><code>VAPID_PUBLIC_KEY</code> / <code>VAPID_PRIVATE_KEY</code></td><td>—</td><td>Web push credentials. Unset = push disabled, SSE unaffected.</td></tr>
+    <tr><td><code>WEB_PUSH_TTL</code></td><td><code>1800</code></td><td>Seconds a push service holds an undelivered message.</td></tr>
+    <tr><td><code>REDIS_URL</code></td><td>—</td><td>Cross-replica event fan-out. Unset = single-process delivery.</td></tr>
+    <tr><td><code>ORDER_EVENTS_REPLAY_MAX_AGE</code></td><td><code>900</code></td><td>Seconds of replay history offered on reconnect.</td></tr>
+  </tbody>
+</table>
+
+<hr />
+
+<h2>Where the code lives</h2>
+
+<table>
+  <thead><tr><th style="width:44%">Path</th><th>Responsibility</th></tr></thead>
+  <tbody>
+    <tr><td><code>src/services/notifications.py</code></td><td>Templates, status &rarr; event mapping, rendering, override merge.</td></tr>
+    <tr><td><code>src/services/queue_alerts.py</code></td><td>Queue recomputation and the once-per-order alert.</td></tr>
+    <tr><td><code>src/services/events.py</code></td><td>Event bus, SSE fan-out, notification log, Deligo report hook.</td></tr>
+    <tr><td><code>src/services/webpush.py</code></td><td>VAPID web push sender.</td></tr>
+    <tr><td><code>src/services/deligo_integration.py</code></td><td><code>push_notification_sent()</code> — the outbound report.</td></tr>
+    <tr><td><code>src/api/endpoints/push.py</code></td><td>Subscriptions, template admin API, notification log API.</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

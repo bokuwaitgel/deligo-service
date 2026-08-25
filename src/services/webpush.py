@@ -263,7 +263,6 @@ def send_to_order(
         # Absolute URL of an uploaded image, or None to let the service worker
         # fall back to the app logo. Must be absolute: the push service fetches
         # it from the customer's device, not from our page.
-        "icon_url": notification.get("icon_url") or None,
         "urgency": notification.get("urgency") or "normal",
         "url": notification.get("url") or "",
         "tag": notification.get("tag") or f"deligo-{sid}",
@@ -304,23 +303,3 @@ def send_event(sales_id: str, event_type: str, event_id: str, data: Dict[str, An
     send_to_order(sales_id, notification, event_id=event_id, event_type=event_type)
 
 
-def subscriptions_for(sales_id: str) -> List[Dict[str, Any]]:
-    """Debug helper: what is registered for this order (no keys returned)."""
-    from src.dependencies import _get_session_factory
-    from src.repositories.push_subscription import PushSubscriptionRepository
-
-    session = _get_session_factory()()
-    try:
-        rows = PushSubscriptionRepository(session).list_for_sales_id(str(sales_id))
-        return [
-            {
-                "id": row.id,
-                "endpoint_host": row.endpoint.split("/")[2] if "//" in row.endpoint else "",
-                "user_agent": row.user_agent,
-                "failure_count": row.failure_count,
-                "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
-            }
-            for row in rows
-        ]
-    finally:
-        session.close()

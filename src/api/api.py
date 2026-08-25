@@ -31,7 +31,6 @@ async def lifespan(app: FastAPI):
     from schemas.database.status_catalog_override_db import Base as StatusOverrideBase
     from schemas.database.notification_override_db import Base as NotificationOverrideBase
     from schemas.database.notification_log_db import Base as NotificationLogBase
-    from schemas.database.notification_icon_db import Base as NotificationIconBase
     from src.repositories.migrations import apply_schema_patches, ensure_schema
     from src.services.events import shutdown_event_bus, start_event_bus
 
@@ -45,7 +44,6 @@ async def lifespan(app: FastAPI):
             StatusOverrideBase,
             NotificationOverrideBase,
             NotificationLogBase,
-            NotificationIconBase,
         ),
     )
     # create_all adds missing tables but never missing columns — patch those.

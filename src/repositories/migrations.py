@@ -104,8 +104,6 @@ _ADD_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # NULL = the queue-position notification has not gone out for this order,
     # which is the correct reading for every row that predates the column.
     ("delivery_orders", "queue_alert_sent_at", "TIMESTAMPTZ"),
-    # Uploaded image shown instead of the Material Symbols glyph.
-    ("notification_template_overrides", "icon_image_id", "VARCHAR(64)"),
 )
 
 # (index, table, column list) — the Index() declarations on the models, repeated

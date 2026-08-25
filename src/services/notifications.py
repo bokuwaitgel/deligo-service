@@ -5,20 +5,16 @@ controllable from the server, so wording can change without shipping a new
 frontend build. The frontend renders whatever ``title`` / ``body`` / ``url`` the
 event carries and never composes its own copy.
 
-Templates are Python format strings resolved against the event payload. Any
-individual template can be overridden at runtime with an environment variable
-named ``NOTIFY_<EVENT_TYPE>_TITLE`` / ``_BODY`` (uppercase event type), and the
-whole map can be replaced with a JSON blob in ``NOTIFY_TEMPLATES_JSON``.
+Templates are Python format strings resolved against the event payload. The
+compiled-in map below is the default; operators edit wording in the admin panel,
+which stores the change in Postgres and is merged on top on every read.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
-
-from src.services import notification_icon
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -147,151 +143,81 @@ _DEFAULT_TEMPLATES: Dict[str, Dict[str, str]] = {
 }
 
 
-def _load_templates() -> Dict[str, Dict[str, str]]:
-    templates = {key: dict(value) for key, value in _DEFAULT_TEMPLATES.items()}
-
-    raw = os.getenv("NOTIFY_TEMPLATES_JSON", "").strip()
-    if raw:
-        try:
-            override = json.loads(raw)
-            if isinstance(override, dict):
-                for event_type, fields in override.items():
-                    if isinstance(fields, dict):
-                        templates.setdefault(str(event_type), {}).update(
-                            {k: str(v) for k, v in fields.items()}
-                        )
-        except ValueError:
-            logger.warning("NOTIFY_TEMPLATES_JSON is not valid JSON — ignoring")
-
-    for event_type, fields in templates.items():
-        env_prefix = f"NOTIFY_{event_type.upper()}"
-        for field in ("title", "body", "icon", "urgency"):
-            value = os.getenv(f"{env_prefix}_{field.upper()}")
-            if value:
-                fields[field] = value
-
-    return templates
-
-
-# The env layer, resolved once per process — env genuinely cannot change under a
-# running process. Admin edits live in Postgres and are merged on top of this on
-# every read; see `_overrides()`.
-_TEMPLATES = _load_templates()
-
-
-# How long a replica may serve notification overrides it read earlier. Every
-# API worker keeps its own copy, so this is also the worst-case delay between
-# an operator saving a template and it taking effect everywhere. Short, because
-# the read is one indexed query against two tiny tables.
+# How long a replica may serve notification data it read earlier. Every API
+# worker keeps its own copy, so this is also the worst-case delay between an
+# operator saving a template and it taking effect everywhere. Short, because
+# each read is one indexed query against a tiny table.
 _OVERRIDE_TTL = int(os.getenv("NOTIFY_OVERRIDE_TTL", "30"))
 
-# (fetched_at, templates, rules). Seeded empty so the defaults are the behaviour
-# until the first successful read.
-_override_cache: tuple[float, Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]] = (
-    0.0,
-    {},
-    {},
-)
+# name -> (fetched_at, value). Empty until the first successful read, so the
+# compiled-in defaults are the behaviour until the database answers.
+_cache: Dict[str, tuple[float, Any]] = {}
 
 
-def _overrides() -> tuple[Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
-    """Operator edits to wording and to status→notification rules.
+def _cached(name: str, seed: Any, load: Callable[[Any], Any]) -> Any:
+    """Read-through TTL cache over one database read.
 
-    Reads through its own session rather than a request-scoped repository:
+    Opens its own session rather than taking a dependency-injected one:
     `build_notification` runs on the web push sender's background thread, which
-    has no request and therefore no dependency-injected session.
+    has no request and therefore no request-scoped session.
 
     Never raises. A database that is down must not stop notifications going
-    out — callers fall back to the compiled-in defaults, which is exactly the
-    behaviour before this feature existed.
+    out — a failed read keeps serving the last known good copy (or the seed)
+    and retries on the next call rather than hammering a struggling database.
     """
-    global _override_cache
-    fetched_at, templates, rules = _override_cache
+    fetched_at, value = _cache.get(name, (0.0, seed))
     now = time.time()
     if now - fetched_at < _OVERRIDE_TTL:
-        return templates, rules
+        return value
 
     try:
         from src.dependencies import _get_session_factory
+
+        session = _get_session_factory()()
+        try:
+            value = load(session)
+        finally:
+            session.close()
+    except Exception:
+        logger.warning("Could not load notification %s — using defaults", name, exc_info=True)
+
+    _cache[name] = (now, value)
+    return value
+
+
+def _overrides() -> tuple[Dict[str, Dict[str, Any]], Dict[int, Dict[str, Any]]]:
+    """Operator edits to wording and to status→notification rules."""
+
+    def load(session):
         from src.repositories.notification_override import (
             NotificationRuleOverrideRepository,
             NotificationTemplateOverrideRepository,
         )
 
-        session = _get_session_factory()()
-        try:
-            templates = NotificationTemplateOverrideRepository(session).as_dict()
-            rules = NotificationRuleOverrideRepository(session).as_dict()
-        finally:
-            session.close()
-        _override_cache = (now, templates, rules)
-    except Exception:
-        # Keep serving the last known good copy (or the empty seed) and retry on
-        # the next call rather than hammering a database that is struggling.
-        _override_cache = (now, templates, rules)
-        logger.warning("Could not load notification overrides — using defaults", exc_info=True)
+        return (
+            NotificationTemplateOverrideRepository(session).as_dict(),
+            NotificationRuleOverrideRepository(session).as_dict(),
+        )
 
-    return templates, rules
-
-
-# (fetched_at, {icon_id: origin}). Separate from the override cache because it
-# is read on a different trigger — only when a template actually names an image
-# — and a template edit must not force a re-read of the icon table.
-_icon_origin_cache: tuple[float, Dict[str, str]] = (0.0, {})
-
-
-def _icon_origins() -> Dict[str, str]:
-    """Upload origin per stored icon, for building absolute URLs.
-
-    Same constraints as `_overrides()`: runs on the push sender's background
-    thread with no request, and never raises — an icon whose origin cannot be
-    read falls back to PUBLIC_API_BASE_URL, and failing that to a relative path
-    that at least still renders inside an open tab.
-    """
-    global _icon_origin_cache
-    fetched_at, origins = _icon_origin_cache
-    now = time.time()
-    if now - fetched_at < _OVERRIDE_TTL:
-        return origins
-
-    try:
-        from src.dependencies import _get_session_factory
-        from src.repositories.notification_icon import NotificationIconRepository
-
-        session = _get_session_factory()()
-        try:
-            origins = {
-                row.id: (row.origin or "")
-                for row in NotificationIconRepository(session).list_all(limit=200)
-            }
-        finally:
-            session.close()
-    except Exception:
-        logger.warning("Could not load notification icon origins", exc_info=True)
-    _icon_origin_cache = (now, origins)
-    return origins
+    return _cached("overrides", ({}, {}), load)
 
 
 def invalidate_override_cache() -> None:
-    """Drop this worker's cached overrides so the next read hits the database.
+    """Drop this worker's cached reads so the next one hits the database.
 
     Called by the admin endpoints after a write so the operator's own next
     request reflects the edit immediately. Other replicas still converge on
     their own TTL — there is no cross-process invalidation channel here, and
     `_OVERRIDE_TTL` is the bound on that.
     """
-    global _override_cache, _icon_origin_cache
-    _override_cache = (0.0, _override_cache[1], _override_cache[2])
-    # An icon uploaded a second ago is referenced by the template saved in the
-    # same breath, so the two caches expire together.
-    _icon_origin_cache = (0.0, _icon_origin_cache[1])
+    _cache.clear()
 
 
 def resolved_templates() -> Dict[str, Dict[str, Any]]:
-    """Defaults + env + operator overrides — what will actually be sent."""
+    """Defaults merged with operator overrides — what will actually be sent."""
     templates, _ = _overrides()
     merged: Dict[str, Dict[str, Any]] = {
-        key: dict(value) for key, value in _TEMPLATES.items()
+        key: dict(value) for key, value in _DEFAULT_TEMPLATES.items()
     }
     for event_type, fields in templates.items():
         target = merged.setdefault(str(event_type), {})
@@ -340,14 +266,6 @@ def _format(template: str, payload: Dict[str, Any]) -> str:
         return template
 
 
-def all_templates() -> Dict[str, Dict[str, str]]:
-    """Every template that will actually be sent, for the admin panel.
-
-    Returns a copy: the map is process-wide state that callers must not mutate.
-    """
-    return resolved_templates()
-
-
 def build_notification(
     event_type: str,
     sales_id: str,
@@ -374,16 +292,6 @@ def build_notification(
     data.setdefault("sales_number", sales_id)
     tracking_code = str(data.get("sales_number") or sales_id)
 
-    # An uploaded image, if the publisher or the template names one. Resolved to
-    # an absolute URL here rather than stored as one, so the id in the database
-    # can only ever address our own icon route.
-    image_id = data.get("notification_icon_image_id") or template.get("icon_image_id")
-    image_url = (
-        notification_icon.icon_url(image_id, _icon_origins().get(str(image_id)))
-        if notification_icon.is_valid_icon_id(image_id)
-        else None
-    )
-
     return {
         "title": _format(template.get("title", ""), data),
         "body": _format(template.get("body", ""), data),
@@ -391,10 +299,6 @@ def build_notification(
         # admin panel's manual message, where the operator picks both. Absent
         # from the payload (the normal case) the template's values stand.
         "icon": data.get("notification_icon") or template.get("icon", "notifications"),
-        # Kept beside `icon`, never instead of it: the glyph is the fallback for
-        # every surface that cannot show the image (iOS, the in-app toast before
-        # the image loads, a failed fetch).
-        "icon_url": image_url,
         "urgency": data.get("notification_urgency") or template.get("urgency", "normal"),
         "url": f"{TRACKING_URL_PREFIX}{tracking_code}",
         # One notification per order per event type replaces the previous one in
