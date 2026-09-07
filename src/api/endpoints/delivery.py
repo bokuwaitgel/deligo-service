@@ -404,7 +404,7 @@ def get_active_drivers(
 
 
 @router.get("/today", dependencies=[Depends(require_api_key)])
-def get_today_deliveries():
+def get_today_deliveries(repo: DeliveryRepository = Depends(get_delivery_repository)):
     """All of today's delivery orders across every driver (admin overview feed).
 
     A single Deligo /api/sales/integration call (no driver filter). The payload is
@@ -415,7 +415,23 @@ def get_today_deliveries():
     """
     try:
         sales = get_company_sales(page_size=2500, use_service_auth=True)
-        return [structure_sales_detail(s) for s in sales if isinstance(s, dict)]
+        items = [structure_sales_detail(s) for s in sales if isinstance(s, dict)]
+
+        # Address-edit attribution (location_updated_*) exists only in our local
+        # rows — Deligo has no such field. The driver/shop list endpoints inject
+        # it in _enrich_with_detail_and_location; this feed skipped it, so the
+        # admin map had no way to tell a fixed pin from an untouched one and the
+        # marker ring stayed red forever. One extra indexed query, no Deligo call.
+        sales_ids = [str(it.get("sales_id")) for it in items if it.get("sales_id")]
+        rows = {row.sales_id: row for row in repo.get_by_sales_ids(sales_ids)} if sales_ids else {}
+        for it in items:
+            row = rows.get(str(it.get("sales_id") or ""))
+            if row is None or row.location_updated_at is None:
+                continue
+            it["location_updated_at"] = row.location_updated_at.isoformat()
+            it["location_updated_by"] = row.location_updated_by
+            it["location_updated_by_name"] = row.location_updated_by_name
+        return items
     except Exception as e:
         logger.error("Error fetching today's deliveries: %s", e)
         raise HTTPException(status_code=500, detail="Failed to fetch today's deliveries")
