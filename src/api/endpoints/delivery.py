@@ -17,6 +17,8 @@ from schemas.delivery import (
     Location,
     LocationUpdateRequest,
     MapStatusUpdateRequest,
+    PaymentCollectedRequest,
+    PinUpdateRequest,
 )
 from schemas.database.delivery_db import DeliveryOrder
 from src.api.auth_utils import require_api_key
@@ -33,6 +35,7 @@ from src.services.delivery import (
     get_delivery,
     update_location,
     update_location_by_address,
+    update_pin,
 )
 from src.services.blacklist import is_driver_blacklisted
 from src.services.driver_identity import DriverAuthError, authorize_driver_for_order
@@ -426,11 +429,15 @@ def get_today_deliveries(repo: DeliveryRepository = Depends(get_delivery_reposit
         rows = {row.sales_id: row for row in repo.get_by_sales_ids(sales_ids)} if sales_ids else {}
         for it in items:
             row = rows.get(str(it.get("sales_id") or ""))
-            if row is None or row.location_updated_at is None:
+            if row is None:
                 continue
-            it["location_updated_at"] = row.location_updated_at.isoformat()
-            it["location_updated_by"] = row.location_updated_by
-            it["location_updated_by_name"] = row.location_updated_by_name
+            if row.location_updated_at is not None:
+                it["location_updated_at"] = row.location_updated_at.isoformat()
+                it["location_updated_by"] = row.location_updated_by
+                it["location_updated_by_name"] = row.location_updated_by_name
+            # Driver's "Бэлэн / Дансаар авсан" tick (★ badge) — also local-only.
+            if row.payment_collected_method:
+                it["payment_collected_method"] = row.payment_collected_method
         return items
     except Exception as e:
         logger.error("Error fetching today's deliveries: %s", e)
@@ -684,6 +691,87 @@ def start_delivery_order(
     # the first delivery closed, i.e. never for a one- or two-order route.
     notify_queue_positions(repo, delivery.driver_id)
     return {"status": "ok", "sales_id": sales_id, "sales_number": delivery.sales_number, "wfm_status_id": 8}
+
+
+@router.post("/{sales_id}/pin", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])
+def update_delivery_pin(
+    sales_id: str,
+    body: PinUpdateRequest,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+    x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
+):
+    """Driver "Pin засах": move only the delivery pin's coordinates.
+
+    Every other address field stays as it is — see services.delivery.update_pin.
+    Driver-only: the token must belong to the driver the order is assigned to,
+    the same verified check as a full driver re-pin.
+    """
+    existing = repo.get_by_sales_id(sales_id)
+    if not existing:
+        # Same no-local-row-yet case as /location: upsert from Deligo first.
+        detail = get_sales_detail(str(sales_id), use_service_auth=True)
+        existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+
+    try:
+        driver_id, driver_name = authorize_driver_for_order(x_driver_token, existing.driver_id)
+    except DriverAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    try:
+        updated = update_pin(
+            repo, existing.sales_id, body.latitude, body.longitude,
+            changed_by_id=driver_id,
+            changed_by_name=driver_name,
+        )
+    except OrderNotEditableError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    return updated
+
+
+@router.post(
+    "/{sales_id}/payment_collected",
+    response_model=DeliveryOrderResponse,
+    dependencies=[Depends(require_api_key)],
+)
+def set_payment_collected(
+    sales_id: str,
+    body: PaymentCollectedRequest,
+    repo: DeliveryRepository = Depends(get_delivery_repository),
+    x_driver_token: Optional[str] = Header(default=None, alias="X-Driver-Token"),
+):
+    """Driver ticks "Бэлэн авсан" / "Дансаар авсан" — the customer paid them.
+
+    Local-only: Deligo has no such field, so this never calls Deligo's status API
+    and never touches is_pay. It exists to put the ★ badge on the map marker.
+    `method: null` undoes a mistaken tick. Only the driver the order is assigned
+    to may set it — the same verified-token check as a driver re-pin.
+    """
+    existing = repo.get_by_sales_id(sales_id)
+    if not existing:
+        # Same no-local-row-yet case as /location: upsert from Deligo first.
+        detail = get_sales_detail(str(sales_id), use_service_auth=True)
+        existing = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
+    if not existing:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+
+    try:
+        driver_id, _ = authorize_driver_for_order(x_driver_token, existing.driver_id)
+    except DriverAuthError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    method = body.method.value if body.method else None
+    updated = repo.update_partial(existing.sales_id, {
+        "payment_collected_method": method,
+        "payment_collected_at": datetime.now(timezone.utc) if method else None,
+        "payment_collected_by": driver_id if method else None,
+    })
+    if not updated:
+        raise HTTPException(status_code=404, detail="Delivery order not found")
+    return updated
 
 
 @router.post("/{sales_id}/map_edit", response_model=DeliveryOrderResponse, dependencies=[Depends(require_api_key)])

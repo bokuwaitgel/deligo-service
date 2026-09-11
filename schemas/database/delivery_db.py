@@ -52,6 +52,15 @@ class DeliveryOrder(Base):
     )
     location_updated_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     location_updated_by_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The driver ticked "Бэлэн авсан" ('cash') or "Дансаар авсан" ('bank') on the
+    # order card: the customer paid the driver. Local-only — Deligo has no such
+    # field — and it is what puts the ★ badge on the map marker. NULL = not
+    # collected, including after the driver undoes a mistaken tick.
+    payment_collected_method: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    payment_collected_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_collected_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

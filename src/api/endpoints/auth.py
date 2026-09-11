@@ -247,6 +247,14 @@ def _enrich_with_detail_and_location(
                 merged["location_updated_by"] = local.location_updated_by
                 merged["location_updated_by_name"] = local.location_updated_by_name
 
+            # Driver's "Бэлэн / Дансаар авсан" tick — local-only, like the
+            # attribution above. It is what puts the ★ badge on the marker.
+            if local.payment_collected_method:
+                merged["payment_collected_method"] = local.payment_collected_method
+                merged["payment_collected_at"] = (
+                    local.payment_collected_at.isoformat() if local.payment_collected_at else None
+                )
+
             # Combine local (authoritative coords from customer-adjusted pin)
             # with whatever Deligo returns (often the only source of structured
             # fields like street_address/district/khoroo/building). Overwriting

@@ -104,6 +104,11 @@ _ADD_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # NULL = the queue-position notification has not gone out for this order,
     # which is the correct reading for every row that predates the column.
     ("delivery_orders", "queue_alert_sent_at", "TIMESTAMPTZ"),
+    # Driver's "Бэлэн / Дансаар авсан" tick. NULL = not collected, which is the
+    # correct reading for every row that predates the columns.
+    ("delivery_orders", "payment_collected_method", "VARCHAR"),
+    ("delivery_orders", "payment_collected_at", "TIMESTAMPTZ"),
+    ("delivery_orders", "payment_collected_by", "VARCHAR"),
 )
 
 # (index, table, column list) — the Index() declarations on the models, repeated

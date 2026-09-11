@@ -85,6 +85,24 @@ class EtaUpdateRequest(BaseModel):
     eta_minutes: int = Field(..., ge=0, description="Estimated time to arrival in minutes")
 
 
+class PinUpdateRequest(BaseModel):
+    """"Pin засах": the new delivery-pin coordinate, and nothing else."""
+
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+
+
+class PaymentCollectedMethod(str, Enum):
+    CASH = "cash"  # Бэлэн авсан
+    BANK = "bank"  # Дансаар авсан
+
+
+class PaymentCollectedRequest(BaseModel):
+    method: Optional[PaymentCollectedMethod] = Field(
+        None, description="How the driver took the payment (cash | bank); null clears the tick"
+    )
+
+
 class DeliveryOrderResponse(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -109,6 +127,10 @@ class DeliveryOrderResponse(BaseModel):
     location_updated_at: Optional[datetime] = None
     location_updated_by: Optional[str] = None
     location_updated_by_name: Optional[str] = None
+    # Driver's "Бэлэн / Дансаар авсан" tick — drives the ★ marker badge.
+    payment_collected_method: Optional[str] = None
+    payment_collected_at: Optional[datetime] = None
+    payment_collected_by: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

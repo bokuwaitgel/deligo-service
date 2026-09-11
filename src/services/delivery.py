@@ -354,6 +354,86 @@ def update_location(
     return DeliveryOrderResponse.model_validate(updated)
 
 
+def update_pin(
+    repo: DeliveryRepository,
+    sales_id: str | int,
+    latitude: float,
+    longitude: float,
+    *,
+    changed_by_id: Optional[str] = None,
+    changed_by_name: Optional[str] = None,
+) -> Optional[DeliveryOrderResponse]:
+    """Move only the delivery pin ("Pin засах") — nothing else about the address.
+
+    Unlike ``update_location`` there is no reverse geocode and no rebuilt
+    address: formatted_address, district/khoroo, building and the driver note in
+    customer_location are carried over untouched, and Deligo is sent its OWN
+    current customerAddress back verbatim with just the new coordinates.
+
+    Returns None if the order is not found; raises OrderNotEditableError once the
+    location is locked. The caller must already have verified the driver.
+    """
+    sales_id = str(sales_id)
+    order = repo.get_by_sales_id(sales_id)
+    if order is None:
+        return None
+    if order.map_status == MapStatus.COMPLETED:
+        raise OrderNotEditableError("Хаяг түгжигдсэн тул pin-ийг өөрчлөх боломжгүй.")
+
+    previous_location = order.customer_location if isinstance(order.customer_location, dict) else None
+    new_location = {**(previous_location or {}), "latitude": latitude, "longitude": longitude}
+    updated = repo.update_partial(sales_id, {
+        "customer_location": new_location,
+        "location_updated_at": datetime.now(timezone.utc),
+        "location_updated_by": changed_by_id,
+        "location_updated_by_name": changed_by_name,
+    })
+    if updated is None:
+        return None
+
+    formatted_address = new_location.get("formatted_address")
+    formatted_address = formatted_address if isinstance(formatted_address, str) else None
+    _record_address_change(
+        repo, order, previous_location,
+        Location(latitude=latitude, longitude=longitude, formatted_address=formatted_address),
+        changed_by_role="driver",
+        changed_by_id=changed_by_id,
+        changed_by_name=changed_by_name,
+    )
+
+    # Deligo's update/address takes the address text along with the coordinates.
+    # Send back exactly what Deligo holds now — read live, not from the 5-minute
+    # detail cache, so a full address edit made moments ago is not reverted. If it
+    # cannot be read, skip the push rather than guess: overwriting Deligo's
+    # address is the one thing a pin-only edit must never do.
+    detail = get_sales_detail(sales_id, use_service_auth=True, skip_cache=True)
+    deligo_address: Optional[str] = None
+    if isinstance(detail, dict):
+        raw_address = detail.get("customer_address") or detail.get("address")
+        deligo_address = str(raw_address).strip() if raw_address else None
+    if deligo_address:
+        push_address_update(sales_id, deligo_address, latitude, longitude)
+    else:
+        logger.warning(
+            "Pin moved locally for sales_id=%s but Deligo not updated — its current address is unavailable",
+            sales_id,
+        )
+
+    publish_order_event(
+        sales_id,
+        "address_updated",
+        {
+            "sales_number": order.sales_number,
+            "changed_by_role": "driver",
+            "changed_by_name": changed_by_name,
+            "formatted_address": formatted_address,
+            "latitude": latitude,
+            "longitude": longitude,
+        },
+    )
+    return DeliveryOrderResponse.model_validate(updated)
+
+
 def update_location_by_address(
     repo: DeliveryRepository, sales_id: str, address: str, is_countryside: bool = False
 ) -> Optional[DeliveryOrderResponse]:
