@@ -10,7 +10,7 @@ import pytest
 
 from src.api.api import app
 from src.api.endpoints import notifications as ep
-from src.dependencies import get_push_subscription_repository
+from src.dependencies import get_delivery_repository, get_push_subscription_repository
 from src.services import notifications as svc
 
 SALES_ID = "1773113766311954"
@@ -22,6 +22,17 @@ class _StubRepo:
 
     def count_for_sales_id(self, sales_id: str) -> int:
         return self.devices
+
+
+class _Order:
+    sales_number = "ORD-77"
+
+
+class _StubOrders:
+    """Knows one order: SALES_ID → ORD-77."""
+
+    def get_by_sales_id(self, sales_id: str):
+        return _Order() if sales_id == SALES_ID else None
 
 
 @pytest.fixture
@@ -38,8 +49,10 @@ def published(monkeypatch):
     # Overrides come from the database; pin the compiled-in defaults instead.
     monkeypatch.setattr(svc, "_overrides", lambda: ({}, {}))
     app.dependency_overrides[get_push_subscription_repository] = lambda: _StubRepo(2)
+    app.dependency_overrides[get_delivery_repository] = lambda: _StubOrders()
     yield calls
     app.dependency_overrides.pop(get_push_subscription_repository, None)
+    app.dependency_overrides.pop(get_delivery_repository, None)
 
 
 def _send(client, auth_headers, **body):
@@ -59,6 +72,73 @@ def test_requires_api_key(client, published):
     )
     assert r.status_code == 403
     assert published == []
+
+
+# ── status mode ─────────────────────────────────────────────────────────────
+
+
+def test_status_mode_resolves_template_like_changestatus(client, auth_headers, published):
+    r = _send(client, auth_headers, status_id=14)
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    tpl = svc.default_templates()["delivery_no_answer"]
+    assert d["event_type"] == "delivery_no_answer"
+    assert d["title"] == tpl["title"]
+    assert d["body"] == tpl["body"]
+    # sales_number looked up from the order when not sent
+    assert d["sales_number"] == "ORD-77"
+    assert d["tracking_url"].endswith("/ORD-77")
+    p = published[0]["payload"]
+    assert p["wfm_status_id"] == 14
+    assert p["status_label"] == "Утсаа аваагүй"
+    assert p["status_description_line"] == ""
+
+
+def test_status_mode_generic_status_prints_label_and_note(client, auth_headers, published):
+    r = _send(client, auth_headers, status_id=16, status_description="Хаалга нээгээгүй")
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["event_type"] == "delivery_failed"
+    assert "Хаягаар очсон" in d["body"]
+    assert "Тайлбар: Хаалга нээгээгүй" in d["body"]
+
+
+def test_status_mode_unknown_status_falls_back_to_status_changed(client, auth_headers, published):
+    r = _send(client, auth_headers, status_id=99)
+    assert r.status_code == 200, r.text
+    d = r.json()["data"]
+    assert d["event_type"] == "status_changed"
+    assert "Шинэчлэгдсэн" in d["body"]
+
+
+def test_status_mode_honours_mute(client, auth_headers, published, monkeypatch):
+    monkeypatch.setattr(svc, "_overrides", lambda: ({}, {14: {"muted": True}}))
+    r = _send(client, auth_headers, status_id=14)
+    assert r.status_code == 409
+    assert published == []
+
+
+def test_status_mode_uses_operator_rule(client, auth_headers, published, monkeypatch):
+    monkeypatch.setattr(svc, "_overrides", lambda: ({}, {16: {"event_type": "delivery_later"}}))
+    r = _send(client, auth_headers, status_id=16)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["event_type"] == "delivery_later"
+
+
+def test_status_mode_unknown_order_falls_back_to_sales_id(client, auth_headers, published):
+    r = client.post(
+        "/api/notifications/send",
+        json={"sales_id": "0000", "status_id": 3},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["sales_number"] == "0000"
+
+
+def test_status_mode_rejects_other_modes(client, auth_headers, published):
+    assert _send(client, auth_headers, status_id=3, event_type="delivery_completed").status_code == 422
+    assert _send(client, auth_headers, status_id=3, title="t", body="b").status_code == 422
+    assert _send(client, auth_headers, event_type="delivery_completed", status_description="x").status_code == 422
 
 
 # ── template mode ───────────────────────────────────────────────────────────

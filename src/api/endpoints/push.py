@@ -524,6 +524,7 @@ def send_admin_message(
             urgency=payload.urgency,
         ),
         repo=repo,
+        orders=None,
     )
     data = result["data"]
     return {

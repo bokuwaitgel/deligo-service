@@ -148,14 +148,14 @@
 
 <div class="cover">
   <h1>Deligo Notification API</h1>
-  <div class="subtitle">One request. Deligo sends a customer notification through the delivery map service &mdash; from a template or with your own wording &mdash; and gets back exactly what the customer saw.</div>
+  <div class="subtitle">One request. Deligo sends a customer notification through the delivery map service &mdash; by status id, from a template, or with your own wording &mdash; and gets back exactly what the customer saw.</div>
   <div class="meta">deligo-service &middot; <code>POST /api/notifications/send</code> &middot; supersedes the Notification Playbook and the Receiver Spec</div>
 </div>
 
 <div class="callout info">
   <strong>Монголоор товчхон.</strong> Deligo талаас хэрэглэгч рүү мэдэгдэл илгээхэд <strong>нэг л API</strong> дуудна:
-  <code>POST /api/notifications/send</code>. Бэлэн загвар (<code>event_type</code>) сонгох эсвэл өөрийн
-  <code>title</code>/<code>body</code> бичих &mdash; хоёрын аль нэгийг. Хариу нь хэрэглэгчид харагдсан текстийг яг хэвээр нь буцаана,
+  <code>POST /api/notifications/send</code>. Гурван хэлбэрийн аль нэгээр: <code>status_id</code> өгвөл тухайн төлөвийн мэдэгдэл шууд явна (хамгийн энгийн);
+  бэлэн загвар (<code>event_type</code>) сонгох; эсвэл өөрийн <code>title</code>/<code>body</code> бичих. Хариу нь хэрэглэгчид харагдсан текстийг яг хэвээр нь буцаана,
   тиймээс Deligo талд хүлээн авах endpoint шаардлагагүй.
 </div>
 
@@ -185,13 +185,20 @@ export API_KEY="your-api-key"</code></pre>
 
 <h2 id="request">2. Request</h2>
 <p><span class="badge post">POST</span> <code>/api/notifications/send</code></p>
-<p>Send <strong>either</strong> a template (<code>event_type</code>) <strong>or</strong> your own copy (<code>title</code> + <code>body</code>). Both at once, or neither, is a 422.</p>
+<p>Send <strong>exactly one</strong> of: a status (<code>status_id</code>), a template (<code>event_type</code>), or your own copy (<code>title</code> + <code>body</code>). Two at once, or none, is a 422.</p>
+
+<div class="callout note">
+  <strong>Simplest call:</strong> <code>{"sales_id": "…", "status_id": 14}</code>. Sends exactly what a driver setting wfm 14 would send &mdash; same rule table, same wording, operator edits included. Nothing else to fill in.
+</div>
 
 <table>
   <thead><tr><th>Field</th><th>Type</th><th></th><th>Meaning</th></tr></thead>
   <tbody>
     <tr><td><code>sales_id</code></td><td>string</td><td><span class="badge req">required</span></td><td>The order. Same id your <code>/api/sales/*</code> endpoints key on.</td></tr>
-    <tr><td><code>sales_number</code></td><td>string</td><td><span class="badge opt">optional</span></td><td>Human-facing order code &mdash; used in the tracking link and <code>{sales_number}</code>. Defaults to <code>sales_id</code>.</td></tr>
+    <tr><td><code>sales_number</code></td><td>string</td><td><span class="badge opt">optional</span></td><td>Human-facing order code &mdash; used in the tracking link and <code>{sales_number}</code>. Looked up from the order when omitted; falls back to <code>sales_id</code>.</td></tr>
+    <tr><td colspan="4" style="background:#eff6ff;font-weight:600;color:#1e40af">Status mode</td></tr>
+    <tr><td><code>status_id</code></td><td>integer</td><td><span class="badge req">one of</span></td><td>Deligo wfm status id (3, 8, 12&ndash;17, 23, &hellip;). The service picks the template the way it does for a driver's status change &mdash; see <a href="#events">&sect;6</a>. Unknown ids get the generic <code>status_changed</code>.</td></tr>
+    <tr><td><code>status_description</code></td><td>string</td><td><span class="badge opt">optional</span></td><td>Driver's / operator's note. Only the generic templates (<code>delivery_failed</code>, <code>status_changed</code>) print it, as a trailing &ldquo;Тайлбар: &hellip;&rdquo;.</td></tr>
     <tr><td colspan="4" style="background:#eff6ff;font-weight:600;color:#1e40af">Template mode</td></tr>
     <tr><td><code>event_type</code></td><td>string</td><td><span class="badge req">one of</span></td><td>Which template &mdash; see <a href="#events">&sect;6</a>.</td></tr>
     <tr><td><code>params</code></td><td>object</td><td><span class="badge opt">optional</span></td><td>Values for the template's placeholders &mdash; see <a href="#params">&sect;3</a>. Only needed when the template has any.</td></tr>
@@ -243,7 +250,7 @@ export API_KEY="your-api-key"</code></pre>
   <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
   <tbody>
     <tr><td><code>event_id</code></td><td>32-char hex, unique per notification. Store it &mdash; it is the key in our delivery log if you ever need to ask about one.</td></tr>
-    <tr><td><code>event_type</code></td><td>What was sent. Custom mode reports <code>admin_message</code>.</td></tr>
+    <tr><td><code>event_type</code></td><td>What was sent. Status mode reports the template the status resolved to; custom mode reports <code>admin_message</code>.</td></tr>
     <tr><td><code>title</code>, <code>body</code>, <code>icon</code>, <code>urgency</code></td><td>Rendered. No placeholders left.</td></tr>
     <tr><td><code>tracking_url</code></td><td>Page the notification opens when tapped.</td></tr>
     <tr><td><code>push_devices</code></td><td>Browsers registered for push on this order. <strong>0 is normal</strong> &mdash; the customer may still see it in an open tracking tab. Not a failure.</td></tr>
@@ -258,16 +265,16 @@ export API_KEY="your-api-key"</code></pre>
   <tbody>
     <tr><td><code>403</code></td><td>Wrong <code>X-API-Key</code></td><td>Invalid or missing API key</td></tr>
     <tr><td><code>404</code></td><td>Unknown <code>event_type</code></td><td>Lists every known type</td></tr>
-    <tr><td><code>409</code></td><td>You passed a <code>wfm_status_id</code> an operator has muted</td><td>Nothing was sent</td></tr>
-    <tr><td><code>422</code></td><td>Both modes / neither; <code>title</code> without <code>body</code>; length limits; bad <code>icon</code>/<code>urgency</code>; unknown <code>params</code> key; missing placeholder</td><td>Says which</td></tr>
+    <tr><td><code>409</code></td><td><code>status_id</code> an operator has muted in the admin panel</td><td>Nothing was sent</td></tr>
+    <tr><td><code>422</code></td><td>More than one mode / none; <code>title</code> without <code>body</code>; length limits; bad <code>icon</code>/<code>urgency</code>; unknown <code>params</code> key; missing placeholder</td><td>Says which</td></tr>
   </tbody>
 </table>
 <p>Anything not 200: nothing was sent. Safe to fix and retry.</p>
 
-<h2 id="events">6. Event types</h2>
-<p>Wording is operator-editable in the admin panel; the table shows today's defaults. New types can be added without a deploy &mdash; a 404 always lists the current set.</p>
+<h2 id="events">6. Event types &amp; status mapping</h2>
+<p>Wording is operator-editable in the admin panel; the table shows today's defaults. New types can be added without a deploy &mdash; a 404 always lists the current set. The <em>wfm</em> column is what <code>status_id</code> resolves to by default; operators can re-point or mute any status.</p>
 <table>
-  <thead><tr><th>event_type</th><th>Title</th><th>Needs params</th><th>Typically for wfm</th></tr></thead>
+  <thead><tr><th>event_type</th><th>Title</th><th>Needs params (template mode)</th><th>status_id &rarr;</th></tr></thead>
   <tbody>
     <tr><td><code>driver_accepted</code></td><td>Жолооч барааг хүлээн авлаа</td><td>&mdash;</td><td>8</td></tr>
     <tr><td><code>delivery_started</code></td><td>Хүргэлтэд гарлаа</td><td>&mdash;</td><td>route start</td></tr>
@@ -289,6 +296,22 @@ export API_KEY="your-api-key"</code></pre>
 </div>
 
 <h2 id="examples">7. Copy-paste examples</h2>
+
+<h3>By status &mdash; the simplest</h3>
+<pre><code>curl -X POST "$BASE/api/notifications/send" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "sales_id": "1773113766311954", "status_id": 14 }'</code></pre>
+
+<h3>By status, with the driver's note</h3>
+<pre><code>curl -X POST "$BASE/api/notifications/send" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sales_id": "1773113766311954",
+    "status_id": 16,
+    "status_description": "Хаалга нээгээгүй"
+  }'</code></pre>
 
 <h3>Template, no params</h3>
 <pre><code>curl -X POST "$BASE/api/notifications/send" \
@@ -338,6 +361,7 @@ export API_KEY="your-api-key"</code></pre>
   <li>Same road as every automatic notification &mdash; one code path, one log.</li>
   <li>The customer's browser opts in to push on the tracking page itself; Deligo does nothing for that.</li>
   <li>One notification per order per <code>event_type</code> replaces the previous one in the phone's tray rather than stacking. Sending <code>delivery_completed</code> twice shows once.</li>
+  <li><code>status_id</code> mode sends the notification only &mdash; it does <em>not</em> change the order's status. Use <code>POST /api/auth/orders/changestatus</code> for that; it notifies on its own.</li>
   <li>No outbound call from us to Deligo. The old <code>POST /api/sales/notification</code> report is switched off; the response above is the record.</li>
 </ul>
 

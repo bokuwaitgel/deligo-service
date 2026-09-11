@@ -105,6 +105,59 @@
       "description": "The one endpoint Deligo calls to send a customer notification. Template mode (event_type + params) or custom mode (title + body) — never both. Response echoes the copy exactly as the customer saw it.",
       "item": [
         {
+          "name": "Send — by status_id",
+          "request": {
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                {
+                  "key": "key",
+                  "value": "X-API-Key",
+                  "type": "string"
+                },
+                {
+                  "key": "value",
+                  "value": "{{api_key}}",
+                  "type": "string"
+                },
+                {
+                  "key": "in",
+                  "value": "header",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sales_id\": \"{{sales_id}}\",\n  \"status_id\": 14\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/notifications/send",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "send"
+              ]
+            },
+            "description": "Simplest form. Sends the notification a driver setting this wfm status would send. Does not change the status."
+          }
+        },
+        {
           "name": "Send — template",
           "request": {
             "auth": {

@@ -1,10 +1,11 @@
 """The one endpoint Deligo calls to tell a customer something.
 
-``POST /api/notifications/send`` takes either a template name (``event_type``,
-plus the ``params`` its placeholders need) or free copy (``title`` + ``body``),
-and returns the notification exactly as the customer sees it. Deligo writes
-that echo onto its own order timeline — which is why there is no receiver on
-their side any more (``DELIGO_NOTIFY_PATH`` is off by default).
+``POST /api/notifications/send`` takes one of: a wfm status (``status_id`` —
+the same template the driver's status change would fire), a template name
+(``event_type``, plus the ``params`` its placeholders need), or free copy
+(``title`` + ``body``) — and returns the notification exactly as the customer
+sees it. Deligo writes that echo onto its own order timeline — which is why
+there is no receiver on their side any more (``DELIGO_NOTIFY_PATH`` is off by default).
 
 Delivery is the same road every automatic notification takes:
 ``publish_order_event`` → SSE to an open tracking tab, web push to a closed
@@ -27,16 +28,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.api.auth_utils import require_api_key
-from src.dependencies import get_push_subscription_repository
+from src.dependencies import get_delivery_repository, get_push_subscription_repository
+from src.repositories.delivery import DeliveryRepository
 from src.repositories.notification_override import VALID_URGENCIES
 from src.repositories.push_subscription import PushSubscriptionRepository
 from src.services import webpush
 from src.services.events import publish_order_event
 from src.services.notifications import (
     KNOWN_PLACEHOLDERS,
+    STATUS_LABEL_BY_WFM_ID,
     build_notification,
     choosable_event_types,
     enrich_params,
+    event_type_for_status,
     missing_placeholders,
 )
 
@@ -55,13 +59,24 @@ _PARAM_KEYS = KNOWN_PLACEHOLDERS - {"sales_number", "admin_title", "admin_body"}
 
 
 class SendNotificationRequest(BaseModel):
-    """Exactly one of: ``event_type`` (template) or ``title`` + ``body`` (custom)."""
+    """Exactly one of: ``status_id`` (status), ``event_type`` (template), or ``title`` + ``body`` (custom)."""
 
     sales_id: str = Field(..., description="Deligo sales id — the order the customer is tracking")
     sales_number: Optional[str] = Field(
         default=None,
         max_length=64,
         description="Human-facing order code for the tracking link and {sales_number}. Defaults to sales_id.",
+    )
+
+    # ── status mode ──
+    status_id: Optional[int] = Field(
+        default=None,
+        description="Deligo wfm status id. Sends whatever a driver setting this status would send.",
+    )
+    status_description: Optional[str] = Field(
+        default=None,
+        max_length=400,
+        description="Status mode only: the note appended by the generic templates.",
     )
 
     # ── template mode ──
@@ -79,7 +94,7 @@ class SendNotificationRequest(BaseModel):
     icon: Optional[str] = Field(default=None, max_length=64)
     urgency: Optional[str] = Field(default=None)
 
-    @field_validator("sales_id", "sales_number", "event_type", "title", "body", "icon", "urgency")
+    @field_validator("sales_id", "sales_number", "event_type", "title", "body", "icon", "urgency", "status_description")
     @classmethod
     def _strip(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -121,17 +136,24 @@ class SendNotificationRequest(BaseModel):
     def _one_mode(self) -> "SendNotificationRequest":
         if not self.sales_id:
             raise ValueError("sales_id is required")
+        status_mode = self.status_id is not None
         template_mode = self.event_type is not None
         custom_mode = self.title is not None or self.body is not None
-        if template_mode and custom_mode:
-            raise ValueError("send either event_type (template) or title+body (custom), not both")
-        if not template_mode and not custom_mode:
-            raise ValueError("send either event_type (template) or title+body (custom)")
+        if status_mode + template_mode + custom_mode != 1:
+            raise ValueError(
+                "send exactly one of: status_id (status), event_type (template), or title+body (custom)"
+            )
         if custom_mode and (self.title is None or self.body is None):
             raise ValueError("custom mode needs both title and body")
-        if self.params and not template_mode:
-            raise ValueError("params only applies to template mode (event_type)")
+        if self.params and custom_mode:
+            raise ValueError("params does not apply to custom mode (title+body)")
+        if self.status_description is not None and not status_mode:
+            raise ValueError("status_description only applies to status mode (status_id)")
         return self
+
+    @property
+    def is_status(self) -> bool:
+        return self.status_id is not None
 
     @property
     def is_template(self) -> bool:
@@ -142,19 +164,47 @@ class SendNotificationRequest(BaseModel):
 def send_notification(
     payload: SendNotificationRequest,
     repo: PushSubscriptionRepository = Depends(get_push_subscription_repository),
+    orders: Optional[DeliveryRepository] = Depends(get_delivery_repository),
 ):
     """Send one notification to one order's customer and echo what they saw.
+
+    Status mode is the driver's status change without the status change: the
+    same rule lookup (operator overrides included) and the same payload shape
+    as ``/api/auth/orders/changestatus``, so the customer reads the same
+    sentence either way — and a muted status is honoured the same way (409
+    here, since a caller deserves to know nothing went out).
 
     Template mode renders the named template against ``params`` and refuses
     (422) rather than send a sentence with a blank where a value should be.
     Custom mode goes out as ``admin_message``, the free-text passthrough.
-    Explicit sends ignore the mute rules: those silence *status-change side
+    Those two ignore the mute rules: mute silences *status-change side
     effects*, and a caller asking by name is intent, not a side effect.
     """
     sales_id = payload.sales_id
-    sales_number = payload.sales_number or sales_id
+    sales_number = payload.sales_number
+    if not sales_number and orders is not None:
+        # Deligo only has to send sales_id; the tracking link still gets the
+        # human code when we already know the order.
+        try:
+            order = orders.get_by_sales_id(sales_id)
+            sales_number = (order.sales_number if order else None) or None
+        except Exception:
+            logger.warning("Could not look up sales_number for %s", sales_id, exc_info=True)
+    sales_number = sales_number or sales_id
 
-    if payload.is_template:
+    if payload.is_status:
+        status_id = int(payload.status_id or 0)
+        event_type = event_type_for_status(status_id)
+        data: Dict[str, Any] = enrich_params(
+            {
+                "wfm_status_id": status_id,
+                # Unknown status → generic wording, same fallback changestatus uses.
+                "status_label": STATUS_LABEL_BY_WFM_ID.get(status_id, "Шинэчлэгдсэн"),
+                "status_description": payload.status_description or "",
+                **(payload.params or {}),
+            }
+        )
+    elif payload.is_template:
         event_type = payload.event_type or ""
         choosable = choosable_event_types()
         if event_type not in choosable:
@@ -162,7 +212,7 @@ def send_notification(
                 status_code=404,
                 detail=f"unknown event_type {event_type!r} (known: {', '.join(choosable)})",
             )
-        data: Dict[str, Any] = enrich_params(payload.params or {})
+        data = enrich_params(payload.params or {})
         missing = missing_placeholders(event_type, data)
         if missing:
             raise HTTPException(
@@ -194,7 +244,7 @@ def send_notification(
     if notification is None:
         raise HTTPException(
             status_code=409,
-            detail=f"status {data.get('wfm_status_id')} is muted; nothing was sent",
+            detail=f"wfm status {data.get('wfm_status_id')} is muted by an operator; nothing was sent",
         )
 
     event_id = uuid.uuid4().hex
