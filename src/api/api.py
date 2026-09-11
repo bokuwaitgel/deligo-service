@@ -14,6 +14,7 @@ from src.api.endpoints.location import router as location_router
 from src.api.endpoints.delivery import router as delivery_router
 from src.api.endpoints.driver import router as driver_router
 from src.api.endpoints.events import router as events_router
+from src.api.endpoints.notifications import router as notifications_router
 from src.api.endpoints.push import router as push_router
 from src.api.endpoints.status_catalog import router as status_catalog_router
 
@@ -98,6 +99,7 @@ app.include_router(delivery_router)
 app.include_router(driver_router)
 app.include_router(events_router)
 app.include_router(push_router)
+app.include_router(notifications_router)
 app.include_router(status_catalog_router)
 
 

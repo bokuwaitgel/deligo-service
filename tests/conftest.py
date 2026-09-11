@@ -2,62 +2,26 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from schemas.database.order_db import Base
-from src.api.api import app
-from src.dependencies import get_order_repository
-from src.repositories.order import OrderRepository
+# Must be set before the app module is imported: `require_api_key` reads it at
+# request time, but other modules read their env at import.
+os.environ.setdefault("API_KEY", "test-api-key")
+os.environ.setdefault("DATABASE_URL", "sqlite://")
 
-TEST_DATABASE_URL = os.getenv("DATABASE_URL", "")
-
-engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
-TestSessionLocal = sessionmaker(bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from src.api.api import app  # noqa: E402
 
 
 @pytest.fixture
-def db_session():
-    session = TestSessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-@pytest.fixture
-def order_repo(db_session):
-    return OrderRepository(db_session)
-
-
-def _override_get_order_repository(db_session):
-    def override():
-        repo = OrderRepository(db_session)
-        try:
-            yield repo
-        finally:
-            pass
-    return override
-
-
-@pytest.fixture
-def client(db_session):
-    app.dependency_overrides[get_order_repository] = _override_get_order_repository(db_session)
-    with TestClient(app) as c:
-        yield c
+def client():
+    # No `with`: the lifespan needs a live Postgres (schema + event bus). The
+    # contract tests stub every repository they touch instead.
+    yield TestClient(app)
     app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def api_key():
-    return os.getenv("API_KEY", "your-api-key-change-in-production")
+    return os.environ["API_KEY"]
 
 
 @pytest.fixture

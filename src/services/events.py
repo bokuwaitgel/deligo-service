@@ -234,18 +234,23 @@ def publish_order_event(
     sales_id: str | int,
     event_type: str,
     payload: Optional[Dict[str, Any]] = None,
+    event_id: Optional[str] = None,
 ) -> None:
     """Announce something that happened to an order.
 
     Never raises: the caller is always in the middle of a business write that
     must succeed whether or not anyone is listening.
+
+    ``event_id`` is normally minted here. A caller that must hand the id back
+    to whoever asked for the send (``POST /api/notifications/send``) passes its
+    own so the response and the log row agree.
     """
     try:
         sid = str(sales_id).strip()
         if not sid:
             return
         event: OrderEvent = {
-            "id": uuid.uuid4().hex,
+            "id": event_id or uuid.uuid4().hex,
             "sales_id": sid,
             "type": event_type,
             "ts": time.time(),

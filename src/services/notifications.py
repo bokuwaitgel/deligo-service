@@ -14,7 +14,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, Optional
+from string import Formatter
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +250,105 @@ def template_provenance() -> Dict[str, Dict[str, Any]]:
 def default_templates() -> Dict[str, Dict[str, str]]:
     """The compiled-in copy, before any operator edit — for the revert preview."""
     return {key: dict(value) for key, value in _DEFAULT_TEMPLATES.items()}
+
+
+# Placeholders a template may reference. Anything else renders as an empty
+# string at send time (`_SafeDict.__missing__`), so both the template editor
+# and the explicit-send endpoint reject it up front — a silently blank
+# sentence is worse than a rejected request.
+#
+# Kept in sync with what the publishers actually put in the payload:
+# `sales_number` is set by build_notification itself; the status fields come
+# from auth.py's status-change publish; distance from the driver_nearby check;
+# the address pair from the address-update publish; admin_* from manual sends.
+KNOWN_PLACEHOLDERS: Set[str] = {
+    "sales_number",
+    "status_label",
+    "status_description",
+    # The driver's note as a ready-made " Тайлбар: …" clause, empty when there
+    # is none. Prefer it over `status_description` in a body — the raw field
+    # leaves any label you write around it stranded on orders with no note.
+    "status_description_line",
+    "wfm_status_id",
+    "distance_text",
+    "formatted_address",
+    "changed_by_name",
+    # Queue-position heads-up: the count, and the ready-made clause that also
+    # covers "nothing ahead of you" without reading "0 хүргэлтийн дараа".
+    "queue_position",
+    "queue_position_text",
+    "admin_title",
+    "admin_body",
+}
+
+# Event types a caller may name explicitly (`POST /api/notifications/send`,
+# the admin rule editor). `admin_message` is the free-text passthrough — it
+# *is* custom mode, not a template to pick — and `driver_location` fires on
+# every GPS ping with no customer-facing copy (see webpush.PUSH_SUPPRESSED_EVENT_TYPES).
+NOT_CHOOSABLE_EVENT_TYPES = frozenset({"admin_message", "driver_location"})
+
+
+def choosable_event_types() -> List[str]:
+    """Templates a caller may ask for by name, sorted."""
+    return sorted(k for k in resolved_templates() if k not in NOT_CHOOSABLE_EVENT_TYPES)
+
+
+def template_placeholders(text: str) -> Set[str]:
+    """Top-level ``{names}`` referenced by one format string.
+
+    Raises ``ValueError`` on unbalanced braces, exactly as ``str.format`` would.
+    ``{a.b}`` / ``{a[0]}`` count as ``a`` — the payload key that has to exist.
+    """
+    return {
+        f.split(".")[0].split("[")[0]
+        for _, f, _, _ in Formatter().parse(text)
+        if f
+    }
+
+
+def enrich_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill the derived placeholders the automatic publishers compute themselves.
+
+    A caller sending ``delivery_failed`` by hand passes ``status_description``;
+    the template wants the pre-punctuated ``status_description_line``. Same for
+    ``wfm_status_id`` → ``status_label`` and ``queue_position`` →
+    ``queue_position_text``. An explicitly supplied derived value wins — the
+    caller may want a different clause.
+    """
+    data = dict(params)
+    if "status_description" in data and "status_description_line" not in data:
+        data["status_description_line"] = describe_status(data["status_description"])
+    if "wfm_status_id" in data and "status_label" not in data:
+        try:
+            data["status_label"] = STATUS_LABEL_BY_WFM_ID.get(int(data["wfm_status_id"]), "")
+        except (TypeError, ValueError):
+            data["status_label"] = ""
+    if "queue_position" in data and "queue_position_text" not in data:
+        try:
+            data["queue_position_text"] = describe_queue_position(int(data["queue_position"]))
+        except (TypeError, ValueError):
+            pass
+    return data
+
+
+def missing_placeholders(event_type: str, params: Dict[str, Any]) -> List[str]:
+    """Placeholders the resolved template needs that ``params`` cannot satisfy.
+
+    ``sales_number`` is never missing — ``build_notification`` sets it. Run on
+    the *enriched* params so a caller who sent ``status_description`` is not
+    told ``status_description_line`` is absent.
+    """
+    template = resolved_templates().get(event_type) or {}
+    needed: Set[str] = set()
+    for field in ("title", "body"):
+        try:
+            needed |= template_placeholders(str(template.get(field, "")))
+        except ValueError:
+            # A broken saved template renders literally; nothing to require.
+            continue
+    needed.discard("sales_number")
+    have = {k for k, v in params.items() if v is not None and str(v) != ""}
+    return sorted(needed - have)
 
 
 class _SafeDict(dict):

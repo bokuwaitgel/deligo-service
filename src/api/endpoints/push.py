@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-from string import Formatter
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
@@ -41,50 +40,24 @@ from src.repositories.notification_override import (
 )
 from src.repositories.push_subscription import PushSubscriptionRepository
 from src.services import webpush
-from src.services.events import publish_order_event
 from src.services.notifications import (
+    KNOWN_PLACEHOLDERS,
     STATUS_LABEL_BY_WFM_ID,
     TRACKING_URL_PREFIX,
     WFM_STATUS_EVENT_TYPES,
     all_rules,
+    choosable_event_types,
     default_templates,
     invalidate_override_cache,
     resolved_templates,
+    template_placeholders,
     template_provenance,
 )
 
-# Placeholders a template may reference. Anything else renders as an empty
-# string at send time (`_SafeDict.__missing__`), so it is rejected on save
-# instead — a silently blank sentence is worse than a rejected edit.
-#
-# Kept in sync with what the publishers actually put in the payload:
-# `sales_number` is set by build_notification itself; the status fields come
-# from auth.py's status-change publish; distance from the driver_nearby check;
-# the address pair from the address-update publish; admin_* from manual sends.
 # How long sent-notification history is kept. Long enough to answer "what did
 # you tell my customer last week", short enough that the table stays small
 # without a scheduled job.
 NOTIFICATION_LOG_RETENTION_DAYS = int(os.getenv("NOTIFICATION_LOG_RETENTION_DAYS", "30"))
-
-KNOWN_PLACEHOLDERS = {
-    "sales_number",
-    "status_label",
-    "status_description",
-    # The driver's note as a ready-made " Тайлбар: …" clause, empty when there
-    # is none. Prefer it over `status_description` in a body — the raw field
-    # leaves any label you write around it stranded on orders with no note.
-    "status_description_line",
-    "wfm_status_id",
-    "distance_text",
-    "formatted_address",
-    "changed_by_name",
-    # Queue-position heads-up: the count, and the ready-made clause that also
-    # covers "nothing ahead of you" without reading "0 хүргэлтийн дараа".
-    "queue_position",
-    "queue_position_text",
-    "admin_title",
-    "admin_body",
-}
 
 logger = logging.getLogger(__name__)
 
@@ -323,10 +296,10 @@ class TemplateOverrideRequest(BaseModel):
             return value
         text = value.strip()
         try:
-            fields = {f for _, f, _, _ in Formatter().parse(text) if f}
+            fields = template_placeholders(text)
         except ValueError as exc:
             raise ValueError(f"unbalanced {{}} in the template: {exc}") from exc
-        unknown = sorted(f for f in fields if f.split(".")[0].split("[")[0] not in KNOWN_PLACEHOLDERS)
+        unknown = sorted(f for f in fields if f not in KNOWN_PLACEHOLDERS)
         if unknown:
             raise ValueError(
                 f"unknown placeholder(s): {', '.join('{' + u + '}' for u in unknown)}. "
@@ -444,7 +417,7 @@ def list_rules():
             # The event types an operator may choose between. `admin_message` is
             # excluded: it renders payload placeholders a status change never
             # carries, so picking it here would send an empty notification.
-            "event_types": sorted(k for k in default_templates() if k != "admin_message"),
+            "event_types": choosable_event_types(),
         },
     }
 
@@ -483,11 +456,11 @@ def upsert_rule_override(
     set_event_type = "event_type" in sent
     event_type = sent.get("event_type")
     if set_event_type and event_type:
-        choosable = {k for k in default_templates() if k != "admin_message"}
+        choosable = choosable_event_types()
         if event_type not in choosable:
             raise HTTPException(
                 status_code=400,
-                detail=f"unknown event_type {event_type!r} (choose from {', '.join(sorted(choosable))})",
+                detail=f"unknown event_type {event_type!r} (choose from {', '.join(choosable)})",
             )
 
     repo.upsert(
@@ -536,36 +509,30 @@ def send_admin_message(
 ):
     """Send an operator-written message to one order's customer.
 
-    Goes out through ``publish_order_event`` rather than calling the push sender
-    directly, so it takes the exact same road as every automatic notification:
-    the open tracking tab shows it over SSE, and the closed one gets it as a
-    push. ``admin_message`` is the template that renders the two free-text
-    fields (see services/notifications.py).
+    Kept for the admin panel. It is the custom-copy half of
+    ``POST /api/notifications/send`` (see endpoints/notifications.py) with the
+    original response shape; new integrations should call that endpoint.
     """
-    sales_id = payload.sales_id.strip()
-    if not sales_id:
-        raise HTTPException(status_code=400, detail="sales_id is required")
+    from src.api.endpoints.notifications import SendNotificationRequest, send_notification
 
-    devices = repo.count_for_sales_id(sales_id)
-    publish_order_event(
-        sales_id,
-        "admin_message",
-        {
-            "sales_number": sales_id,
-            "admin_title": payload.title.strip(),
-            "admin_body": payload.body.strip(),
-            "notification_icon": payload.icon.strip() or "campaign",
-            "notification_urgency": payload.urgency,
-        },
+    result = send_notification(
+        SendNotificationRequest(
+            sales_id=payload.sales_id,
+            title=payload.title,
+            body=payload.body,
+            icon=payload.icon,
+            urgency=payload.urgency,
+        ),
+        repo=repo,
     )
-    logger.info("Admin notification published for sales_id=%s (%d device(s))", sales_id, devices)
+    data = result["data"]
     return {
         "status": "ok",
         "data": {
-            "sales_id": sales_id,
+            "sales_id": data["sales_id"],
             # How many browsers the push half can reach. Zero is not an error:
             # an open tracking tab still receives it over SSE.
-            "push_devices": devices,
-            "push_enabled": webpush.is_configured(),
+            "push_devices": data["push_devices"],
+            "push_enabled": data["push_enabled"],
         },
     }

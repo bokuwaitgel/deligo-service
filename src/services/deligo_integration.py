@@ -12,13 +12,16 @@ Outbound reports (best effort, never raise):
 
 - POST /api/sales/update/address     — the driver moved the delivery pin
 - POST /api/sales/notification       — what the customer was told, and when
+                                       (off unless DELIGO_NOTIFY_PATH is set)
 
 Driver-related fields come from this service at read time; we no longer
 store driver_id/driver_name locally.
 
 Configure via env:
     DELIGO_API_URL       (default https://api.deligo.mn)
-    DELIGO_NOTIFY_PATH   (default /api/sales/notification; empty = reports off)
+    DELIGO_NOTIFY_PATH   (default empty = reports off; set /api/sales/notification
+                          to enable — Deligo has no receiver today, they call
+                          POST /api/notifications/send on us instead)
 """
 from __future__ import annotations
 
@@ -475,11 +478,11 @@ def push_address_update(
     return True
 
 
-# Where Deligo receives "we told the customer this" reports. Set the env var to
-# empty to turn the reports off without a deploy — useful if Deligo's endpoint
-# starts erroring, since a failing report is pure noise to us but one warning
-# line per delivery in the log.
-DELIGO_NOTIFY_PATH = os.getenv("DELIGO_NOTIFY_PATH", "/api/sales/notification").strip()
+# Where Deligo receives "we told the customer this" reports. Off by default:
+# Deligo chose to *call us* (POST /api/notifications/send returns the rendered
+# copy) rather than build a receiver, so there is nowhere to POST. Set the env
+# var to a path to turn the reports on without a deploy if that ever changes.
+DELIGO_NOTIFY_PATH = os.getenv("DELIGO_NOTIFY_PATH", "").strip()
 
 # Own executor rather than webpush's: this POST must not be able to fill the
 # push sender's queue, and a slow Deligo must not delay a customer's push.
