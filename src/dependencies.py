@@ -4,6 +4,7 @@ import logging
 import os
 
 from dotenv import load_dotenv
+from fastapi import Depends
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -49,77 +50,107 @@ def _get_engine() -> Engine:
 def _get_session_factory() -> sessionmaker[Session]:
     global _SESSION_FACTORY
     if _SESSION_FACTORY is None:
-        _SESSION_FACTORY = sessionmaker(bind=_get_engine())
+        # expire_on_commit=False: without it every attribute read after a commit
+        # issues a fresh SELECT, which needs a connection back out of the pool at
+        # the worst possible moment — while writing the response. That reload is
+        # what turned a busy pool into 500s on POST /api/drivers/{id}/location.
+        _SESSION_FACTORY = sessionmaker(bind=_get_engine(), expire_on_commit=False)
     return _SESSION_FACTORY
 
 
-def get_delivery_repository():
+def configure_thread_limiter() -> None:
+    """Cap concurrent sync request handlers at what the DB pool can serve.
+
+    Endpoints are sync ``def``, so Starlette runs them on anyio's thread pool —
+    40 threads by default. Each one checks out a pooled connection, so 40 threads
+    chasing pool_size+max_overflow=10 connections means 30 of them wait out
+    ``pool_timeout`` and then fail with ``QueuePool limit ... reached``.
+
+    Limiting the thread pool instead makes the excess requests queue for a
+    *thread* (cheap, no connection held, no 30s timer) and each running handler
+    find a free connection. Back-pressure replaces 500s.
+    """
+    try:
+        import anyio.to_thread
+
+        pool_size = int(os.getenv("DB_POOL_SIZE", "5"))
+        max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "5"))
+        # Headroom for the background senders (webpush / deligo-notify), which
+        # open their own sessions off the request path.
+        reserved = int(os.getenv("DB_BACKGROUND_RESERVE", "2"))
+        limit = int(os.getenv("API_THREAD_LIMIT", str(max(1, pool_size + max_overflow - reserved))))
+        anyio.to_thread.current_default_thread_limiter().total_tokens = limit
+        logger.info("Request thread pool limited to %d concurrent handlers", limit)
+    except Exception:
+        logger.warning("Could not configure the request thread limiter", exc_info=True)
+
+
+def get_db_session():
+    """One session — and so at most one pooled connection — per request.
+
+    Repositories depend on this rather than opening their own session: FastAPI
+    caches a dependency per request, so an endpoint taking two repositories used
+    to check out two connections for the whole request.
+    """
+    session = _get_session_factory()()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def release_connection(session: Session) -> None:
+    """Hand this request's connection back to the pool mid-request.
+
+    Call before a slow upstream (Deligo) round-trip: a session that has run a
+    query holds its connection until close, and holding it idle across seconds
+    of HTTP is what drains the pool. The session stays usable — the next query
+    opens a new transaction on a freshly checked-out connection. Rows already
+    loaded stay readable because the factory sets ``expire_on_commit=False``.
+    """
+    try:
+        session.close()
+    except Exception:
+        logger.warning("Could not release the DB connection early", exc_info=True)
+
+
+def get_delivery_repository(session: Session = Depends(get_db_session)):
     from src.repositories.delivery import DeliveryRepository
 
-    session = _get_session_factory()()
-    try:
-        yield DeliveryRepository(session)
-    finally:
-        session.close()
+    return DeliveryRepository(session)
 
 
-def get_driver_location_repository():
+def get_driver_location_repository(session: Session = Depends(get_db_session)):
     from src.repositories.driver_location import DriverLocationRepository
 
-    session = _get_session_factory()()
-    try:
-        yield DriverLocationRepository(session)
-    finally:
-        session.close()
+    return DriverLocationRepository(session)
 
 
-def get_push_subscription_repository():
+def get_push_subscription_repository(session: Session = Depends(get_db_session)):
     from src.repositories.push_subscription import PushSubscriptionRepository
 
-    session = _get_session_factory()()
-    try:
-        yield PushSubscriptionRepository(session)
-    finally:
-        session.close()
+    return PushSubscriptionRepository(session)
 
 
-def get_status_catalog_override_repository():
+def get_status_catalog_override_repository(session: Session = Depends(get_db_session)):
     from src.repositories.status_catalog_override import StatusCatalogOverrideRepository
 
-    session = _get_session_factory()()
-    try:
-        yield StatusCatalogOverrideRepository(session)
-    finally:
-        session.close()
+    return StatusCatalogOverrideRepository(session)
 
 
-def get_notification_template_override_repository():
+def get_notification_template_override_repository(session: Session = Depends(get_db_session)):
     from src.repositories.notification_override import NotificationTemplateOverrideRepository
 
-    session = _get_session_factory()()
-    try:
-        yield NotificationTemplateOverrideRepository(session)
-    finally:
-        session.close()
+    return NotificationTemplateOverrideRepository(session)
 
 
-def get_notification_log_repository():
+def get_notification_log_repository(session: Session = Depends(get_db_session)):
     from src.repositories.notification_log import NotificationLogRepository
 
-    session = _get_session_factory()()
-    try:
-        yield NotificationLogRepository(session)
-    finally:
-        session.close()
+    return NotificationLogRepository(session)
 
 
-
-
-def get_notification_rule_override_repository():
+def get_notification_rule_override_repository(session: Session = Depends(get_db_session)):
     from src.repositories.notification_override import NotificationRuleOverrideRepository
 
-    session = _get_session_factory()()
-    try:
-        yield NotificationRuleOverrideRepository(session)
-    finally:
-        session.close()
+    return NotificationRuleOverrideRepository(session)

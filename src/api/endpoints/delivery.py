@@ -22,7 +22,7 @@ from schemas.delivery import (
 )
 from schemas.database.delivery_db import DeliveryOrder
 from src.api.auth_utils import require_api_key
-from src.dependencies import get_delivery_repository
+from src.dependencies import get_delivery_repository, release_connection
 from src.repositories.address_change import AddressChangeRepository
 from src.repositories.delivery import DeliveryRepository
 from src.services.delivery import (
@@ -456,6 +456,9 @@ def get_delivery_order(
         
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
+        # Release the pooled connection before the Deligo round-trip: an
+        # open read transaction would otherwise pin it for the whole call.
+        release_connection(repo.db_session)
         if delivery_order.sales_id:
             detail = get_sales_detail(str(delivery_order.sales_id), use_service_auth=True)
             if detail:
@@ -479,6 +482,9 @@ def get_delivery_order_by_sales_id(
         delivery_order = repo.get_by_sales_id(sales_id)
         if not delivery_order:
             raise HTTPException(status_code=404, detail="Delivery order not found")
+        # Release the pooled connection before the Deligo round-trip: an
+        # open read transaction would otherwise pin it for the whole call.
+        release_connection(repo.db_session)
         if delivery_order.sales_id:
             detail = get_sales_detail(delivery_order.sales_id, use_service_auth=True)
             if detail:
@@ -871,6 +877,7 @@ def track_delivery_order(
             # Deligo /api/sales/get endpoint historically keyed on sales_id,
             # but newer deployments also resolve by sales_number, so we try
             # that as the lookup key. If nothing comes back, return 404.
+            release_connection(repo.db_session)
             detail = get_sales_detail(sales_number, use_service_auth=True)
             created = _upsert_local_delivery_from_detail(repo, detail) if isinstance(detail, dict) else None
             if created is None:
@@ -878,6 +885,9 @@ def track_delivery_order(
             delivery_order = DeliveryOrderResponse.model_validate(created)
         if delivery_order.map_status == "deleted":
             raise HTTPException(status_code=404, detail="Delivery order not found")
+        # Release the pooled connection before the Deligo round-trip: an
+        # open read transaction would otherwise pin it for the whole call.
+        release_connection(repo.db_session)
         detail = get_sales_detail(str(delivery_order.sales_id), use_service_auth=True) if delivery_order.sales_id else None
         if detail:
             delivery_order.detail = detail  # type: ignore[attr-defined]
@@ -969,6 +979,15 @@ def get_driver_deliveries(
         all_local_rows = {d.sales_id: d for d in repo.get_by_sales_ids(sales_ids)}
         deleted_ids = {sid for sid, row in all_local_rows.items() if row.map_status == "deleted"}
         local_rows = {sid: row for sid, row in all_local_rows.items() if row.map_status != "deleted"}
+
+        # Every driver polls this endpoint, and the hydrate pass below can make
+        # one Deligo round-trip per order. A session that has run a query keeps
+        # its pooled connection until it is closed, so without this the request
+        # sat on a connection for the whole upstream conversation — which is how
+        # the pool ran dry and unrelated writes (GPS pings) started failing with
+        # "QueuePool limit ... reached". Hand it back; the next query takes a
+        # fresh one.
+        release_connection(repo.db_session)
 
         # The Deligo /api/sales/integration LIST response only ships a thin
         # payload — the full structured customer_location (street_address,

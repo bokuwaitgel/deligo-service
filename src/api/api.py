@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from src.dependencies import _get_engine
+    from src.dependencies import _get_engine, configure_thread_limiter
     from schemas.database.delivery_db import Base as DeliveryBase
     from schemas.database.driver_location_db import Base as DriverBase
     from schemas.database.push_subscription_db import Base as PushBase
@@ -50,6 +50,10 @@ async def lifespan(app: FastAPI):
     # create_all adds missing tables but never missing columns — patch those.
     apply_schema_patches(engine)
     logger.info("Database tables ensured")
+
+    # Sync handlers run on anyio's thread pool; keep that no wider than the
+    # DB pool so load queues instead of timing out on a connection.
+    configure_thread_limiter()
 
     await start_event_bus()
     try:
