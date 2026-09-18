@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 import uvicorn
 from dotenv import load_dotenv
@@ -40,12 +41,20 @@ def main():
         print("Warning: --reload is incompatible with --workers > 1; ignoring --workers")
         args.workers = 1
 
+    # An SSE stream never ends on its own, and uvicorn's default graceful
+    # shutdown waits for every open connection — so SIGTERM alone would leave
+    # the container hanging until Docker's grace period ran out (a `compose up
+    # --build` then sits for minutes on "Recreate"). Cut the wait short: open
+    # streams are dropped and the browser reconnects with Last-Event-ID.
+    graceful_timeout = int(os.getenv("SHUTDOWN_GRACE_SECONDS", "5"))
+
     uvicorn.run(
         "src.api.api:app",
         host=args.host,
         port=args.port,
         reload=args.reload,
         workers=args.workers if not args.reload else None,
+        timeout_graceful_shutdown=graceful_timeout,
     )
 
 
